@@ -1,3 +1,5 @@
+// file came from http://vedder.se/2012/07/usb-serial-on-stm32f4/
+
 #include <sys/stat.h>
 #include "stm32f4xx.h"
 #include "stm32f4xx_conf.h"
