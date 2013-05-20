@@ -6,7 +6,7 @@
 #include "usbd_core.h"
 #include "usbd_cdc_core.h"
 
-#include "main.h"
+#include "mytimer.h"
 
 extern uint32_t USBD_OTG_ISR_Handler (USB_OTG_CORE_HANDLE *pdev);
 extern USB_OTG_CORE_HANDLE USB_OTG_dev;

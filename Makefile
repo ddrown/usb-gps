@@ -1,6 +1,7 @@
 # Sources
 
-SRCS = main.c stm32f4xx_it.c system_stm32f4xx.c syscalls.c
+SRCS = main.c pps.c mytimer.c
+SRCS += stm32f4xx_it.c system_stm32f4xx.c syscalls.c
 
 # USB
 SRCS += usbd_usr.c usbd_cdc_vcp.c usbd_desc.c usb_bsp.c
