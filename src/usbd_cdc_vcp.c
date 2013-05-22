@@ -35,8 +35,6 @@ LINE_CODING linecoding = {
 		0x08 /* nb. of bits 8*/
 };
 
-USART_InitTypeDef USART_InitStructure;
-
 /* These are external variables imported from CDC core to be used for IN 
  transfer management. */
 extern uint8_t APP_Rx_Buffer[]; /* Write CDC received data in this buffer.
