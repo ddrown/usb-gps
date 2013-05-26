@@ -93,4 +93,6 @@ clean:
 	rm -f $(OUTPATH)/$(PROJ_NAME).hex
 	rm -f $(OUTPATH)/$(PROJ_NAME).bin
 	$(MAKE) clean -C lib # Remove this line if you don't want to clean the libs as well
-	
+
+flash: $(OUTPATH)/$(PROJ_NAME).elf
+	arm-none-eabi-gdb -ex "target extended localhost:4242" -ex "monitor reset halt" -ex "load" $(OUTPATH)/$(PROJ_NAME).elf	

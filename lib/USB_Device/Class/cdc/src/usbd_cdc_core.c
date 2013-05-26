@@ -61,7 +61,7 @@
 #include "usbd_cdc_core.h"
 #include "usbd_desc.h"
 #include "usbd_req.h"
-
+#include "pps.h"
 
 /** @addtogroup STM32_USB_OTG_DEVICE_LIBRARY
   * @{
@@ -497,7 +497,7 @@ static uint8_t  usbd_cdc_DeInit (void  *pdev,
 static uint8_t  usbd_cdc_Setup (void  *pdev, 
                                 USB_SETUP_REQ *req)
 {
-  uint16_t len;
+  uint16_t len = 0;
   uint8_t  *pbuf;
   
   switch (req->bmRequest & USB_REQ_TYPE_MASK)
@@ -697,9 +697,15 @@ static uint8_t  usbd_cdc_SOF (void *pdev)
   {
     /* Reset the frame counter */
     FrameCount = 0;
-    
+  
+    // prepare serial buffer 
+    before_usb_poll(); 
+
     /* Check the data to be sent through IN pipe */
     Handle_USBAsynchXfer(pdev);
+
+    // measure USB transfer time
+    after_usb_poll();
   }
   
   return USBD_OK;
