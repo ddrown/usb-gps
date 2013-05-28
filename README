@@ -18,3 +18,8 @@ perl
 Source code:
 
 start by looking through src/main.c, src/pps.c, src/mytimer.c
+
+
+Results:
+
+see http://dan.drown.org/stm32/run4.html
