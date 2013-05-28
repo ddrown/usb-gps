@@ -26,6 +26,7 @@ endif
 
 ###################################################
 
+# path to the "summon-arm-toolchain" compiler
 BINPATH=~/sat/bin
 CC=$(BINPATH)/arm-none-eabi-gcc
 OBJCOPY=$(BINPATH)/arm-none-eabi-objcopy
