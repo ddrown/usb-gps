@@ -4,6 +4,7 @@
 #include "stm32f4xx.h"
 
 #include "pps.h"
+#include "usbd_cdc_vcp.h"
 
 static __IO uint32_t LastPPSTime;
 static __IO uint8_t PendingPPSTime = 0;
@@ -14,21 +15,22 @@ void mainloop_pps() {
 static uint32_t start_usb;
 static uint8_t pending_usb_time = 0;
 void before_usb_poll() {
-  static uint32_t pps_before_that = 0;
 
   if(PendingPPSTime) {
     start_usb = TIM_GetCounter(TIM2);
+    VCP_send_buffer((uint8_t *)"P", 1);
     pending_usb_time = 1;
-    printf("P %lu %lu %ld\n",LastPPSTime,start_usb,LastPPSTime-pps_before_that);
-    pps_before_that = LastPPSTime;
     PendingPPSTime = 0;
   }
 }
 
 void after_usb_poll() {
+  static uint32_t pps_before_that = 0;
+
   if(pending_usb_time) {
     int32_t diff = TIM_GetCounter(TIM2) - start_usb;
-    printf("U %ld\n", diff);
+    printf(" %lu %lu %ld %ld\n",LastPPSTime,start_usb,LastPPSTime-pps_before_that, diff);
+    pps_before_that = LastPPSTime;
     pending_usb_time = 0;
   }
 }
