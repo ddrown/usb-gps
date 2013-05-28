@@ -1,0 +1,20 @@
+Hardware:
+
+STM32F4 discovery board
+Fastrax UP501 GPS
+USB TTL serial port board
+
+wire GPS PPS pin to PA1 on the STM32F4 board
+wire GPS serial to TTL serial port board
+wire ground and power appropriately
+
+
+Build environment:
+
+summon-arm-toolchain - https://github.com/esden/summon-arm-toolchain.git
+perl
+
+
+Source code:
+
+start by looking through src/main.c, src/pps.c, src/mytimer.c
