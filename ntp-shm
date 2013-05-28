@@ -1,0 +1,124 @@
+#!/usr/bin/perl
+
+# part of this code is from: https://github.com/doug1/psip-time/blob/master/psip-time.pl
+# This module is free software. You can redistribute it and/or
+# modify it under the terms of the Artistic License 2.0.
+#
+# This program is distributed in the hope that it will be useful,
+# but without any warranty; without even the implied warranty of
+# merchantability or fitness for a particular purpose.
+#
+# example /etc/ntp.conf:
+# server 127.127.28.0 minpoll 4 maxpoll 4
+# fudge 127.127.28.0 time1 0.000 refid GPS stratum 0
+#
+# to run this program:
+# ./ntp-shm </dev/ttyACM0
+# Adjust /dev/ttyACM0 to match your device (see dmesg). Needs to run as root (shm permissions)
+
+use strict;
+use Time::HiRes qw(gettimeofday tv_interval);
+use IPC::SysV qw(IPC_PRIVATE IPC_RMID S_IRUSR S_IWUSR);
+
+my $st_interval_estimate = 10500000; # frequency of the timer on the microcontroller
+
+my $sample_start;
+my(@samples);
+sub parseline {
+  my($shmid, $line, $now, $interval) = @_;
+
+  if($interval > 1.003 or $interval < 0.997) {
+    print "skip (local timer)\n";
+    return; # skip un-even pulses
+  }
+
+  if($line !~ /^P (\d+) (\d+) (\d+) (\d+)/) {
+    print "bad line\n";
+    return;
+  }
+  my($time_pps, $time_now, $st_interval, $usb_time) = ($1,$2,$3,$4);
+  if($st_interval > 10501000 or $st_interval < 10499999) {
+    print "skip (remote timer)\n";
+    return; # skip PPS pulses that happen outside of a 500ppm window
+  }
+  $st_interval_estimate = $st_interval_estimate * 0.8 + $st_interval * 0.2;
+
+  my $nsamples = 0;
+  my $valid = 1;
+  my $precision = -15;
+  my $leap = 0;
+  my $count = 0;
+  my $mode = 0;
+
+  my $local_sec = $now->[0];
+  my $local_usec = $now->[1];
+
+  my $remote_sec = $now->[0]; # TODO: gps
+  if($now->[1] > 700000) { # TODO: hack-around, assume local clock is within 300ms of real time
+    $remote_sec++;
+  }
+  my $remote_usec = int(($time_now - $time_pps + $usb_time)/$st_interval_estimate*1000000);
+
+  my $format = "ll". "ql" . "l" . "ql" . "llll" . "l" . "llllllllll";
+  my $message = pack( $format, 
+		  $mode,      $count,      $remote_sec,  $remote_usec,
+		  0,          $local_sec,  $local_usec,  $leap,
+		  $precision, $nsamples,   $valid,       0,
+		  0,          0,           0,            0,
+		  0,          0,           0,            0,
+		  0,          0);
+  my $local = $local_sec + ($local_usec / 1000000);
+  my $remote = $remote_sec + ($remote_usec / 1000000);
+  push(@samples, {
+    offset => $remote - $local,
+    local => $local,
+    remote => $remote,
+    message => $message
+  });
+  if($sample_start < $now->[0]-15) {
+    # pick the median sample
+    @samples = sort { $a->{offset} <=> $b->{offset} } @samples;
+    send_time_to_ntp($shmid,$samples[int(@samples/2)]);
+    @samples = ();
+    $sample_start = $now->[0];
+  }
+}
+
+sub send_time_to_ntp {
+  my($shmid,$message) = @_;
+
+  my $len = length($message->{message});
+  my $ret = shmwrite($shmid, $message->{message}, 0, $len) || die("$!");
+  printf("Sent offset %+0.6f l=%1.6f r=%1.6f ($len bytes)\n", $message->{offset}, $message->{local}, $message->{remote});
+  die unless($len == 96);
+}
+
+
+use constant {
+  NTP_SHMID => 0x4e545030
+};
+
+my $shmid = shmget(NTP_SHMID, 96, S_IRUSR | S_IWUSR);
+die "shmget: $!" if ( $shmid < 0 );
+print "shm key $shmid\n";
+
+# line format:
+# P 1305295299 1305299665 10500794 23
+# ^ time_pps   time_now   frequenc usb_transfer
+# ^mark
+my($char, $now, $last, $line);
+while(sysread(STDIN, $char, 1) >0) {
+  $now = [gettimeofday];
+  printf("%d.%06d ",$now->[0],$now->[1]);
+  my $interval = tv_interval($last,$now);
+  $last = $now;
+
+  print "$interval $char";
+  $line = $char;
+  while($char ne "\n") {
+    sysread(STDIN, $char, 1);
+    $line .= $char;
+    print $char;
+  }
+  parseline($shmid, $line, $now, $interval);
+}
