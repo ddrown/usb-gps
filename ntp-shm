@@ -18,14 +18,44 @@
 
 use strict;
 use Time::HiRes qw(gettimeofday tv_interval);
+use Time::Local qw(timegm);
 use IPC::SysV qw(IPC_PRIVATE IPC_RMID S_IRUSR S_IWUSR);
 
 my $st_interval_estimate = 10500000; # frequency of the timer on the microcontroller
 
+my $gps_time;
+my $gps_time_timestamp;
+my(%gps_info);
+my(@fixtypes) = ("??","no fix","2D fix","3D fix");
+sub parseline_time {
+  my($now,$line,$interval) = @_;
+
+  # G 3,6,8,27,3,38,32,2,6,13,1,3764701747
+  if($line =~ /^G (\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)/) {
+    my($fixtype,$fixsatcount,$satcount,$avgsnr,$hour,$minute,$second,$day,$month,$year,$valid,$timestamp) = ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12);
+
+    $gps_time_timestamp = $timestamp;
+    $gps_time = timegm($second,$minute,$hour,$day,$month-1,$year); 
+
+    %gps_info = (
+        fixsatcount => $fixsatcount,
+        satcount => $satcount,
+        avgsnr => $avgsnr,
+        fixtype => $fixtype,
+        valid => $valid
+        );
+  }
+}
+
 my $sample_start;
-my(@samples);
+my(@samples,%counters);
 sub parseline {
   my($shmid, $line, $now, $interval) = @_;
+
+  if($line =~ /^G [\d,]+/) {
+    parseline_time($now,$line,$interval);
+    return;
+  }
 
   if($interval > 1.003 or $interval < 0.997) {
     print "skip (local timer)\n";
@@ -43,9 +73,20 @@ sub parseline {
   }
   $st_interval_estimate = $st_interval_estimate * 0.8 + $st_interval * 0.2;
 
+  my $gps_time_ms_ago = ($time_now - $gps_time_timestamp)/$st_interval_estimate*1000;
+  $gps_time_ms_ago += 700; # serial time is ~700ms off
+  if($gps_time_ms_ago > 1999) {
+    print "skip (gps time longer than 2s ago)\n";
+    return;
+  }
+  if($gps_time_ms_ago < 0) {
+    print "skip (gps time counter wrap?)\n"; #TODO
+    return;
+  }
+
   my $nsamples = 0;
   my $valid = 1;
-  my $precision = -15;
+  my $precision = -14;
   my $leap = 0;
   my $count = 0;
   my $mode = 0;
@@ -53,9 +94,20 @@ sub parseline {
   my $local_sec = $now->[0];
   my $local_usec = $now->[1];
 
-  my $remote_sec = $now->[0]; # TODO: gps
-  if($now->[1] > 700000) { # TODO: hack-around, assume local clock is within 300ms of real time
+  my $remote_sec = $gps_time;
+  if($gps_time_ms_ago > 700) {
     $remote_sec++;
+    $counters{over_1s}++;
+    $counters{over_1s_sum} += $gps_time_ms_ago;
+    if($gps_time_ms_ago < $counters{over_1s_min} or not defined($counters{over_1s_min})) {
+      $counters{over_1s_min} = $gps_time_ms_ago;
+    }
+  } else {
+    $counters{under_1s}++;
+    $counters{under_1s_sum} += $gps_time_ms_ago;
+    if($gps_time_ms_ago < $counters{under_1s_min} or not defined($counters{under_1s_min})) {
+      $counters{under_1s_min} = $gps_time_ms_ago;
+    }
   }
   my $remote_usec = int(($time_now - $time_pps + $usb_time)/$st_interval_estimate*1000000);
 
@@ -89,7 +141,13 @@ sub send_time_to_ntp {
 
   my $len = length($message->{message});
   my $ret = shmwrite($shmid, $message->{message}, 0, $len) || die("$!");
-  printf("Sent offset %+0.6f l=%1.6f r=%1.6f ($len bytes)\n", $message->{offset}, $message->{local}, $message->{remote});
+  printf("Sent offset %+0.6f l=%1.6f r=%1.6f ($len bytes) +1s=%d(%d) -1s=%d(%d) %s %s %d/%d avg%d\n", $message->{offset}, $message->{local}, $message->{remote}, 
+      $counters{over_1s}, $counters{over_1s_min},
+      $counters{under_1s}, $counters{under_1s_min},
+      $fixtypes[$gps_info{fixtype}], $gps_info{valid} ? "valid" : "not valid",
+      $gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr}
+      );
+  %counters = ();
   die unless($len == 96);
 }
 
@@ -106,19 +164,26 @@ print "shm key $shmid\n";
 # P 1305295299 1305299665 10500794 23
 # ^ time_pps   time_now   frequenc usb_transfer
 # ^mark
-my($char, $now, $last, $line);
+# G fixtype,fixsatcount,satcount,avgsnr,day,month,year,hour,minute,second,valid,timestamp
+my($char, $now, @last, $line);
 while(sysread(STDIN, $char, 1) >0) {
   $now = [gettimeofday];
-  printf("%d.%06d ",$now->[0],$now->[1]);
-  my $interval = tv_interval($last,$now);
-  $last = $now;
+#  printf("%d.%06d ",$now->[0],$now->[1]);
+  my $last_i;
+  if($char eq "G") {
+    $last_i = 0;
+  } elsif($char eq "P") {
+    $last_i = 1;
+  }
+  my $interval = tv_interval($last[$last_i],$now);
+  $last[$last_i] = $now;
 
-  print "$interval $char";
+#  print "$interval $char";
   $line = $char;
   while($char ne "\n") {
     sysread(STDIN, $char, 1);
     $line .= $char;
-    print $char;
+#    print $char;
   }
   parseline($shmid, $line, $now, $interval);
 }

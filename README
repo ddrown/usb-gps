@@ -2,11 +2,10 @@ Hardware:
 
 STM32F4 discovery board
 Fastrax UP501 GPS
-USB TTL serial port board
 
 wire GPS PPS pin to PA1 on the STM32F4 board
-wire GPS serial to TTL serial port board
-wire ground and power appropriately
+wire GPS serial to GPS RX=PA2, GPS TX=PA3
+wire power of GPS to a 3.3V supply (STM32F4 "3V" is 2.9V, and will not work)
 
 
 Build environment:
@@ -17,7 +16,7 @@ perl
 
 Source code:
 
-start by looking through src/main.c, src/pps.c, src/mytimer.c
+start by looking through src/main.c, src/pps.c, src/mytimer.c, src/uart.c
 
 
 Results:

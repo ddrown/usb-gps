@@ -5,6 +5,7 @@
 
 #include "pps.h"
 #include "usbd_cdc_vcp.h"
+#include "uart.h"
 
 static __IO uint32_t LastPPSTime;
 static __IO uint8_t PendingPPSTime = 0;
@@ -21,6 +22,8 @@ void before_usb_poll() {
     VCP_send_buffer((uint8_t *)"P", 1);
     pending_usb_time = 1;
     PendingPPSTime = 0;
+  } else {
+    gps_data();
   }
 }
 

@@ -36,14 +36,13 @@ void Timer_init() {
 void TIM2_IRQHandler(void) {
   if(TIM_GetITStatus(TIM2, TIM_IT_Update) == SET) {
     TIM_ClearITPendingBit(TIM2, TIM_FLAG_Update);
-    GPIO_ToggleBits(GPIOD, GPIO_Pin_13); // flash "counter wrap" LED
   }
 }
 
 void mainloop_timer() {
   if(TimingDelay == 0) {
     GPIO_ToggleBits(GPIOD, GPIO_Pin_14); // flash "alive" LED
-    TimingDelay = 500;
+    TimingDelay = 1000;
   }
 }
 

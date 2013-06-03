@@ -12,6 +12,7 @@
 #include "main.h"
 #include "pps.h"
 #include "mytimer.h"
+#include "uart.h"
 
 // Private variables
 __ALIGN_BEGIN USB_OTG_CORE_HANDLE  USB_OTG_dev __ALIGN_END;
@@ -31,6 +32,7 @@ int main(void) {
   while(1) {
     mainloop_pps();
     mainloop_timer();
+    mainloop_uart();
   }
 
   return 0;
@@ -55,6 +57,8 @@ void init() {
   PPS_init();
 
   Timer_init();
+
+  UART_init();
 
   USBD_Init(&USB_OTG_dev, USB_OTG_FS_CORE_ID, &USR_desc, &USBD_CDC_cb, &USR_cb);
 }
