@@ -17,9 +17,14 @@
 # Adjust /dev/ttyACM0 to match your device (see dmesg). Needs to run as root (shm permissions)
 
 use strict;
-use Time::HiRes qw(gettimeofday tv_interval);
+use Time::HiRes qw(gettimeofday tv_interval usleep);
 use Time::Local qw(timegm);
 use IPC::SysV qw(IPC_PRIVATE IPC_RMID S_IRUSR S_IWUSR);
+use IO::Handle;
+use Inline "C";
+use constant {
+  NTP_SHMID => 0x4e545030
+};
 
 my $st_interval_estimate = 10500000; # frequency of the timer on the microcontroller
 
@@ -27,6 +32,7 @@ my $gps_time;
 my $gps_time_timestamp;
 my(%gps_info);
 my(@fixtypes) = ("??","no fix","2D fix","3D fix");
+my($last_lock) = 0;
 sub parseline_time {
   my($now,$line,$interval) = @_;
 
@@ -36,6 +42,11 @@ sub parseline_time {
 
     $gps_time_timestamp = $timestamp;
     $gps_time = timegm($second,$minute,$hour,$day,$month-1,$year); 
+
+    if($last_lock != $fixtype) {
+      print "GPS lock from ".$fixtypes[$last_lock]." to ".$fixtypes[$fixtype]."\n";
+      $last_lock = $fixtype;
+    }
 
     %gps_info = (
         fixsatcount => $fixsatcount,
@@ -47,7 +58,7 @@ sub parseline_time {
   }
 }
 
-my $sample_start;
+my $sample_start = time();
 my(@samples,%counters);
 sub parseline {
   my($shmid, $line, $now, $interval) = @_;
@@ -58,29 +69,28 @@ sub parseline {
   }
 
   if($interval > 1.003 or $interval < 0.997) {
-    print "skip (local timer)\n";
+    print "skip (local timer=$interval s)\n";
     return; # skip un-even pulses
   }
 
   if($line !~ /^P (\d+) (\d+) (\d+) (\d+)/) {
-    print "bad line\n";
+    print "bad line, $line\n";
     return;
   }
   my($time_pps, $time_now, $st_interval, $usb_time) = ($1,$2,$3,$4);
   if($st_interval > 10501000 or $st_interval < 10499999) {
-    print "skip (remote timer)\n";
+    print "skip (remote timer=$st_interval HZ)\n";
     return; # skip PPS pulses that happen outside of a 500ppm window
   }
   $st_interval_estimate = $st_interval_estimate * 0.8 + $st_interval * 0.2;
 
   my $gps_time_ms_ago = ($time_now - $gps_time_timestamp)/$st_interval_estimate*1000;
+  if($gps_time_ms_ago < 0) { # counter wrap
+    $gps_time_ms_ago = ($time_now - $gps_time_timestamp + 2**32)/$st_interval_estimate*1000;
+  }
   $gps_time_ms_ago += 700; # serial time is ~700ms off
   if($gps_time_ms_ago > 1999) {
-    print "skip (gps time longer than 2s ago)\n";
-    return;
-  }
-  if($gps_time_ms_ago < 0) {
-    print "skip (gps time counter wrap?)\n"; #TODO
+    print "skip (gps time longer than 2s ago=$gps_time_ms_ago ms)\n";
     return;
   }
 
@@ -128,9 +138,13 @@ sub parseline {
     message => $message
   });
   if($sample_start < $now->[0]-15) {
-    # pick the median sample
     @samples = sort { $a->{offset} <=> $b->{offset} } @samples;
-    send_time_to_ntp($shmid,$samples[int(@samples/2)]);
+    if(@samples > 7) { # we had coverage for more than half the time period
+      # use the median sample
+      send_time_to_ntp($shmid,$samples[int(@samples/2)]);
+    }
+    printf LOGFILE ("%d %0.6f %0.6f %d %d %d %d %d %d %d\n",time(),$samples[0]{offset},$samples[-1]{offset},$#samples,$gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr},$gps_info{fixtype},$gps_info{valid},$st_interval);
+    printf("min = %0.6f max = %0.6f size=%0.6f count=%d\n",$samples[0]{offset},$samples[-1]{offset},$samples[-1]{offset}-$samples[0]{offset},$#samples);
     @samples = ();
     $sample_start = $now->[0];
   }
@@ -151,24 +165,25 @@ sub send_time_to_ntp {
   die unless($len == 96);
 }
 
-
-use constant {
-  NTP_SHMID => 0x4e545030
-};
+# run with real-time priority
+if(set_rr(10) < 0) {
+  die("set_rr failed: $!");
+}
 
 my $shmid = shmget(NTP_SHMID, 96, S_IRUSR | S_IWUSR);
 die "shmget: $!" if ( $shmid < 0 );
-print "shm key $shmid\n";
+
+open(LOGFILE, ">>gps.log") or die("unable to open gps.log: $!");
+LOGFILE->autoflush(1);
 
 # line format:
 # P 1305295299 1305299665 10500794 23
 # ^ time_pps   time_now   frequenc usb_transfer
 # ^mark
 # G fixtype,fixsatcount,satcount,avgsnr,day,month,year,hour,minute,second,valid,timestamp
-my($char, $now, @last, $line);
-while(sysread(STDIN, $char, 1) >0) {
-  $now = [gettimeofday];
-#  printf("%d.%06d ",$now->[0],$now->[1]);
+my($now, @last, $line);
+while(my($char,$now_s,$now_us) = timeread(fileno(STDIN))) {
+  $now = [$now_s,$now_us];
   my $last_i;
   if($char eq "G") {
     $last_i = 0;
@@ -186,4 +201,39 @@ while(sysread(STDIN, $char, 1) >0) {
 #    print $char;
   }
   parseline($shmid, $line, $now, $interval);
+  if($line !~ /^G/) {
+    usleep(10000); # limit rate of reading messages because realtime 
+  }
+}
+
+__END__
+__C__
+#include <sched.h>
+#include <unistd.h>
+#include <sys/time.h>
+
+int set_rr(int priority) {
+  struct sched_param param;
+
+  param.sched_priority = priority;
+  return sched_setscheduler(0, SCHED_RR, &param);  
+}
+
+void timeread(int fd) {
+  char data;
+  struct timeval now;
+  Inline_Stack_Vars;
+
+  if(read(fd, &data, 1) != 1) {
+    Inline_Stack_Reset;
+    Inline_Stack_Done;
+    return;
+  }
+  gettimeofday(&now,NULL);
+
+  Inline_Stack_Reset;
+  Inline_Stack_Push(sv_2mortal(newSVpvn(&data, 1)));
+  Inline_Stack_Push(sv_2mortal(newSViv(now.tv_sec)));
+  Inline_Stack_Push(sv_2mortal(newSViv(now.tv_usec)));
+  Inline_Stack_Done;
 }
