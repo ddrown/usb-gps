@@ -14,28 +14,36 @@ void mainloop_pps() {
 }
 
 static uint32_t start_usb;
-static uint8_t pending_usb_time = 0;
+static uint16_t pending_usb_time = 0;
+static uint16_t last_usb_time = 0;
 void before_usb_poll() {
 
   if(PendingPPSTime) {
     start_usb = TIM_GetCounter(TIM2);
     VCP_send_buffer((uint8_t *)"P", 1);
+    last_usb_time = pending_usb_time;
     pending_usb_time = 1;
     PendingPPSTime = 0;
   } else {
-    gps_data();
+    pending_usb_time++;
+    if(pending_usb_time == 1) { // wrap
+      pending_usb_time = 2;
+    }
   }
 }
 
 void after_usb_poll() {
   static uint32_t pps_before_that = 0;
 
-  if(pending_usb_time) {
+  if(pending_usb_time == 1) {
     int32_t diff = TIM_GetCounter(TIM2) - start_usb;
-    printf(" %lu %lu %ld %ld\n",LastPPSTime,start_usb,LastPPSTime-pps_before_that, diff);
+    printf(" %lu %lu %ld %ld %u\n",LastPPSTime,start_usb,LastPPSTime-pps_before_that, diff, last_usb_time);
     pps_before_that = LastPPSTime;
-    pending_usb_time = 0;
   }
+}
+
+uint8_t clear_to_print() {
+  return pending_usb_time < 495 || pending_usb_time > 505;
 }
 
 void EXTI1_IRQHandler(void) {

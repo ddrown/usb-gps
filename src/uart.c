@@ -8,6 +8,8 @@
 
 #include "uart.h"
 #include "mytimer.h"
+#include "usbd_cdc_vcp.h"
+#include "pps.h"
 
 #define LINE_MAX 80
 #define LINES_COUNT 2
@@ -34,15 +36,6 @@ static struct gps_status {
   uint32_t time_timestamp;
   uint8_t done;
 } gps_state;
-
-void gps_data() {
-  if(gps_state.done == 1) {
-    printf("G %u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%lu\n", gps_state.fix_type, gps_state.fix_sat_count, gps_state.sat_count, gps_state.avg_snr, 
-        gps_state.day, gps_state.month, gps_state.year, gps_state.hour, gps_state.minute, gps_state.second, gps_state.valid,
-        gps_state.time_timestamp);
-    gps_state.done = 0;
-  }
-}
 
 // $GPGSA,A,3,23,19,13,03,,,,,,,,,3.83,3.70,0.99
 static void handle_gpgsa(const char *line) {
@@ -196,6 +189,13 @@ void mainloop_uart() {
     } else if(strncmp("$GPGGA,", nmea_line[line_completed], 7) == 0) {
       handle_gpgga(nmea_line[line_completed]);
     }
+  }
+
+  if(clear_to_print() && gps_state.done == 1) {
+    printf("G %u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%lu\n", gps_state.fix_type, gps_state.fix_sat_count, gps_state.sat_count, gps_state.avg_snr,
+        gps_state.day, gps_state.month, gps_state.year, gps_state.hour, gps_state.minute, gps_state.second, gps_state.valid,
+        gps_state.time_timestamp);
+    gps_state.done = 0;
   }
 }
 
