@@ -2,3 +2,6 @@
 *.o
 .*.swp
 build/
+_Inline/
+gps.log*
+pps.log*

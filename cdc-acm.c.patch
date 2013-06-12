@@ -1,0 +1,43 @@
+--- cdc-acm.c.orig	2013-06-12 09:45:17.796889900 -0500
++++ cdc-acm.c	2013-06-12 09:46:03.942769141 -0500
+@@ -418,12 +418,21 @@
+ 	tty_flip_buffer_push(&acm->port);
+ }
+ 
++#define P_MSG_TIME 0x5461
++static struct timespec p_msg_time;
++static uint8_t p_msg_time_valid = 0;
++
+ static void acm_read_bulk_callback(struct urb *urb)
+ {
+ 	struct acm_rb *rb = urb->context;
+ 	struct acm *acm = rb->instance;
+ 	unsigned long flags;
+ 
++        if(urb->actual_length == 1 && memcmp(urb->transfer_buffer, "P", 1) == 0) {
++          getnstimeofday(&p_msg_time);
++          p_msg_time_valid = 1;
++        }
++
+ 	dev_vdbg(&acm->data->dev, "%s - urb %d, len %d\n", __func__,
+ 					rb->index, urb->actual_length);
+ 	set_bit(rb->index, &acm->read_urbs_free);
+@@ -834,6 +843,18 @@
+ 	case TIOCSSERIAL:
+ 		rv = set_serial_info(acm, (struct serial_struct __user *) arg);
+ 		break;
++        case P_MSG_TIME:
++                if(p_msg_time_valid) {
++                  if(copy_to_user((void __user *)arg, &p_msg_time, sizeof(p_msg_time))) {
++                    rv = -EFAULT;
++                  } else {
++                    rv = 0;
++                  }
++                  p_msg_time_valid = 0;
++                } else {
++                  rv = -ENOENT;
++                }
++                break;
+ 	}
+ 
+ 	return rv;

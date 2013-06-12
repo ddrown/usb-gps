@@ -47,6 +47,9 @@ sub parseline_time {
       print "GPS lock from ".$fixtypes[$last_lock]." to ".$fixtypes[$fixtype]."\n";
       $last_lock = $fixtype;
     }
+    if($fixtype == 1) {
+      print "sats: $satcount, $avgsnr\n";
+    }
 
     %gps_info = (
         fixsatcount => $fixsatcount,
@@ -73,11 +76,14 @@ sub parseline {
     return; # skip un-even pulses
   }
 
-  if($line !~ /^P (\d+) (\d+) (\d+) (\d+)/) {
+  if($line !~ /^P (\d+) (\d+) (\d+) (\d+) (\d+)/) {
     print "bad line, $line\n";
     return;
   }
-  my($time_pps, $time_now, $st_interval, $usb_time) = ($1,$2,$3,$4);
+  my($time_pps, $time_now, $st_interval, $usb_time, $usb_polls) = ($1,$2,$3,$4,$5);
+  if($usb_polls < 499 or $usb_polls > 500) {
+    print "polls: $usb_polls\n";
+  }
   if($st_interval > 10501000 or $st_interval < 10499999) {
     print "skip (remote timer=$st_interval HZ)\n";
     return; # skip PPS pulses that happen outside of a 500ppm window
@@ -143,8 +149,9 @@ sub parseline {
       # use the median sample
       send_time_to_ntp($shmid,$samples[int(@samples/2)]);
     }
-    printf LOGFILE ("%d %0.6f %0.6f %d %d %d %d %d %d %d\n",time(),$samples[0]{offset},$samples[-1]{offset},$#samples,$gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr},$gps_info{fixtype},$gps_info{valid},$st_interval);
+    printf LOGFILE ("%d %0.6f %0.6f %d %d %d %d %d %d %d %d\n",time(),$samples[0]{offset},$samples[-1]{offset},$#samples,$gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr},$gps_info{fixtype},$gps_info{valid},$st_interval,$usb_polls);
     printf("min = %0.6f max = %0.6f size=%0.6f count=%d\n",$samples[0]{offset},$samples[-1]{offset},$samples[-1]{offset}-$samples[0]{offset},$#samples);
+    print PPSSAMPLES time()." ".join(" ", map { $_->{offset} *1000000 } @samples)."\n";
     @samples = ();
     $sample_start = $now->[0];
   }
@@ -155,19 +162,13 @@ sub send_time_to_ntp {
 
   my $len = length($message->{message});
   my $ret = shmwrite($shmid, $message->{message}, 0, $len) || die("$!");
-  printf("Sent offset %+0.6f l=%1.6f r=%1.6f ($len bytes) +1s=%d(%d) -1s=%d(%d) %s %s %d/%d avg%d\n", $message->{offset}, $message->{local}, $message->{remote}, 
+  printf("Sent offset %+0.6f l=%1.6f r=%1.6f +1s=%d(%d) -1s=%d(%d) %s\n", $message->{offset}, $message->{local}, $message->{remote}, 
       $counters{over_1s}, $counters{over_1s_min},
       $counters{under_1s}, $counters{under_1s_min},
-      $fixtypes[$gps_info{fixtype}], $gps_info{valid} ? "valid" : "not valid",
-      $gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr}
+      $fixtypes[$gps_info{fixtype}]
       );
   %counters = ();
   die unless($len == 96);
-}
-
-# run with real-time priority
-if(set_rr(10) < 0) {
-  die("set_rr failed: $!");
 }
 
 my $shmid = shmget(NTP_SHMID, 96, S_IRUSR | S_IWUSR);
@@ -176,33 +177,38 @@ die "shmget: $!" if ( $shmid < 0 );
 open(LOGFILE, ">>gps.log") or die("unable to open gps.log: $!");
 LOGFILE->autoflush(1);
 
+open(PPSSAMPLES, ">>pps.log") or die("unable to open pps.log: $!");
+PPSSAMPLES->autoflush(1);
+
 # line format:
 # P 1305295299 1305299665 10500794 23
 # ^ time_pps   time_now   frequenc usb_transfer
 # ^mark
 # G fixtype,fixsatcount,satcount,avgsnr,day,month,year,hour,minute,second,valid,timestamp
 my($now, @last, $line);
-while(my($char,$now_s,$now_us) = timeread(fileno(STDIN))) {
+while(my($char,$now_s,$now_us,$ioctl_status) = timeread(fileno(STDIN))) {
   $now = [$now_s,$now_us];
   my $last_i;
   if($char eq "G") {
     $last_i = 0;
   } elsif($char eq "P") {
     $last_i = 1;
+    if($ioctl_status != 0) {
+      my $lastmsg = tv_interval($last[0],$now);
+      printf("[%0.6f] ioctl : %s]\n",$lastmsg,$ioctl_status);
+    }
   }
   my $interval = tv_interval($last[$last_i],$now);
   $last[$last_i] = $now;
 
-#  print "$interval $char";
   $line = $char;
   while($char ne "\n") {
     sysread(STDIN, $char, 1);
     $line .= $char;
-#    print $char;
   }
-  parseline($shmid, $line, $now, $interval);
-  if($line !~ /^G/) {
-    usleep(10000); # limit rate of reading messages because realtime 
+  if($line =~ /^P/ and $ioctl_status < 0) { # throw it away
+  } else {
+    parseline($shmid, $line, $now, $interval);
   }
 }
 
@@ -211,6 +217,9 @@ __C__
 #include <sched.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <sys/ioctl.h>
+
+#define P_MSG_TIME 0x5461
 
 int set_rr(int priority) {
   struct sched_param param;
@@ -221,7 +230,9 @@ int set_rr(int priority) {
 
 void timeread(int fd) {
   char data;
+  int status;
   struct timeval now;
+  struct timespec pps;
   Inline_Stack_Vars;
 
   if(read(fd, &data, 1) != 1) {
@@ -229,11 +240,23 @@ void timeread(int fd) {
     Inline_Stack_Done;
     return;
   }
-  gettimeofday(&now,NULL);
+  if(data == 'P') {
+    status = ioctl(fd, P_MSG_TIME, &pps);
+    if(status < 0) {
+      status = -errno;
+      gettimeofday(&now,NULL);
+    } else {
+      now.tv_sec = pps.tv_sec;
+      now.tv_usec = pps.tv_nsec/1000;
+    }
+  } else {
+    gettimeofday(&now,NULL);
+  }
 
   Inline_Stack_Reset;
   Inline_Stack_Push(sv_2mortal(newSVpvn(&data, 1)));
   Inline_Stack_Push(sv_2mortal(newSViv(now.tv_sec)));
   Inline_Stack_Push(sv_2mortal(newSViv(now.tv_usec)));
+  Inline_Stack_Push(sv_2mortal(newSViv(status)));
   Inline_Stack_Done;
 }
