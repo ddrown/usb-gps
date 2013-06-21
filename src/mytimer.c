@@ -3,6 +3,7 @@
 #include "stm32f4xx_tim.h"
 
 #include "mytimer.h"
+#include "pps.h"
 
 __IO uint32_t TimingDelay;
 
@@ -36,6 +37,9 @@ void Timer_init() {
 void TIM2_IRQHandler(void) {
   if(TIM_GetITStatus(TIM2, TIM_IT_Update) == SET) {
     TIM_ClearITPendingBit(TIM2, TIM_FLAG_Update);
+  } else if(TIM_GetITStatus(TIM2, TIM_IT_CC2) == SET) {
+    TIM_ClearITPendingBit(TIM2, TIM_IT_CC2);
+    TIM2_CC2_IRQ();
   }
 }
 

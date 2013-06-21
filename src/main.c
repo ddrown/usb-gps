@@ -54,9 +54,9 @@ void LED_init() {
 void init() {
   LED_init();
 
-  PPS_init();
-
   Timer_init();
+
+  PPS_init();
 
   UART_init();
 
