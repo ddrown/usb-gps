@@ -1,24 +1,55 @@
-Hardware:
-
-STM32F4 discovery board
-Fastrax UP501 GPS
-
-wire GPS PPS pin to PA1 on the STM32F4 board
-wire GPS serial to GPS RX=PA2, GPS TX=PA3
-wire power of GPS to a 3.3V supply (STM32F4 "3V" is 2.9V, and will not work)
-
-
 Build environment:
 
 summon-arm-toolchain - https://github.com/esden/summon-arm-toolchain.git
-perl
+perl on PC with the perl module "Inline::C"
+
+use "make" to build the STM32F4 code.  Flash with st-link utility (I've had the best success with their windows tool)
+
+
+Hardware setup:
+
+STM32F4 discovery board
+Fastrax UP501 GPS
+some 3.3V power source
+
+wire GPS PPS pin to PA1 on the STM32F4 board
+wire GPS serial to STM32F4's UART: GPS RX=STM32F4 PA2, GPS TX=STM32F4 PA3
+wire power of GPS to a 3.3V supply (STM32F4 "3V" is 2.9V, and will not work)
+connect STM32F4's USB port to PC
+power STM32F4 via its debug USB port or via the 5V pin
+
+
+NTP setup:
+
+The STM32F4 will show up as /dev/ttyACM0 (or some number other than 0) on the linux host.  Check dmesg to see:
+[697103.547376] usb 2-1.1: Product: STM32 Virtual ComPort in FS Mode
+[697103.574835] usb 2-1.1: Manufacturer: STMicroelectronics
+[697103.601224] usb 2-1.1: SerialNumber: 00000000050C
+[697103.627691] usb 2-1.1: adding 2-1.1:1.0 (config #1, interface 0)
+[697103.627726] cdc_acm 2-1.1:1.0: This device cannot do calls on its own. It is not a modem.
+[697103.657570] cdc_acm 2-1.1:1.0: ttyACM0: USB ACM device
+
+Add to /etc/ntp.conf:
+server 127.127.28.0 minpoll 4 maxpoll 4
+fudge 127.127.28.0 time1 0.000 refid GPS stratum 0
+
+Run as root (from this directory):
+./ntp-shm </dev/ttyACM0
+
+Verify NTP is getting data with "ntpq -p":
+     remote           refid      st t when poll reach   delay   offset  jitter
+==============================================================================
+*SHM(0)          .GPS.            0 l    9   16  377    0.000    0.006   0.008
+
+(the reach column should be non-zero, and then "when" column will tell you the time of the last sample)
 
 
 Source code:
 
-start by looking through src/main.c, src/pps.c, src/mytimer.c, src/uart.c
+(stm32f4) start by looking through src/main.c, src/pps.c, src/mytimer.c, src/uart.c
+(PC) see the file ntp-shm
 
 
 Results:
 
-see http://dan.drown.org/stm32/run4.html
+see http://dan.drown.org/stm32/
