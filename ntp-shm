@@ -112,6 +112,19 @@ sub parseline {
   }
 }
 
+sub addcounters {
+  my($amount,$name) = @_;
+
+  $counters{$name}++;
+  $counters{$name."_sum"} += $amount;
+  if(not defined($counters{$name."_min"}) or $amount < $counters{$name."_min"}) {
+    $counters{$name."_min"} = $amount;
+  }
+  if($amount > $counters{$name."_max"}) {
+    $counters{$name."_max"} = $amount;
+  }
+}
+
 sub gps_time_seconds {
   my($gps_time,$gps_time_ms_ago) = @_;
 
@@ -121,39 +134,38 @@ sub gps_time_seconds {
     return undef;
   } elsif($gps_time_ms_ago > 1700) {
     $remote_sec += 2;
-    $counters{over_2s}++;
-    $counters{over_2s_sum} += $gps_time_ms_ago;
-    if($gps_time_ms_ago < $counters{over_2s_min} or not defined($counters{over_2s_min})) {
-      $counters{over_2s_min} = $gps_time_ms_ago;
-    }
-    if($gps_time_ms_ago > $counters{over_2s_max}) {
-      $counters{over_2s_max} = $gps_time_ms_ago;
-    }
+    addcounters($gps_time_ms_ago,"over_2s");
   } elsif($gps_time_ms_ago > 700) {
     $remote_sec++;
-    $counters{over_1s}++;
-    $counters{over_1s_sum} += $gps_time_ms_ago;
-    if($gps_time_ms_ago < $counters{over_1s_min} or not defined($counters{over_1s_min})) {
-      $counters{over_1s_min} = $gps_time_ms_ago;
-    }
-    if($gps_time_ms_ago > $counters{over_1s_max}) {
-      $counters{over_1s_max} = $gps_time_ms_ago;
-    }
+    addcounters($gps_time_ms_ago,"over_1s");
   } else {
-    $counters{under_1s}++;
-    $counters{under_1s_sum} += $gps_time_ms_ago;
-    if($gps_time_ms_ago < $counters{under_1s_min} or not defined($counters{under_1s_min})) {
-      $counters{under_1s_min} = $gps_time_ms_ago;
-    }
-    if($gps_time_ms_ago > $counters{under_1s_max}) {
-      $counters{under_1s_max} = $gps_time_ms_ago;
-    }
+    addcounters($gps_time_ms_ago,"under_1s");
   }
  
   return $remote_sec;
 }
 
-my $last_samples;
+sub ntp_message {
+  my($remote_sec,$remote_usec,$local_sec,$local_usec) = @_;
+
+  my $nsamples = 0;
+  my $valid = 1;
+  my $precision = -14;
+  my $leap = 0;
+  my $count = 0;
+  my $mode = 0;
+
+  my $format = "ll". "ql" . "l" . "ql" . "llll" . "l" . "llllllllll";
+  my $message = pack( $format, 
+		  $mode,      $count,      $remote_sec,  $remote_usec,
+		  0,          $local_sec,  $local_usec,  $leap,
+		  $precision, $nsamples,   $valid,       0,
+		  0,          0,           0,            0,
+		  0,          0,           0,            0,
+		  0,          0);
+  return $message;
+}
+
 sub parse_full {
   my($now, $shmid, $time_pps, $time_now, $st_interval, $usb_time, $usb_polls) = @_;
 
@@ -179,18 +191,12 @@ sub parse_full {
     $st_interval_estimate = $st_interval_estimate * 0.8 + $st_interval * 0.2;
   }
 
-  my $gps_time_ms_ago = ($time_now - $gps_time_timestamp)/$st_interval_estimate*1000;
-  if($gps_time_ms_ago < 0) { # counter wrap
-    $gps_time_ms_ago = ($time_now - $gps_time_timestamp + 2**32)/$st_interval_estimate*1000;
+  my $gps_time_hz_ago = $time_now - $gps_time_timestamp;
+  if($gps_time_hz_ago < 0) { # counter wrap
+    $gps_time_hz_ago += 2**32;
   }
+  my $gps_time_ms_ago = $gps_time_hz_ago/$st_interval_estimate*1000;
   $gps_time_ms_ago += 700; # serial time is ~700ms off
-
-  my $nsamples = 0;
-  my $valid = 1;
-  my $precision = -14;
-  my $leap = 0;
-  my $count = 0;
-  my $mode = 0;
 
   my $local_sec = $now->[0];
   my $local_usec = $now->[1];
@@ -209,38 +215,44 @@ sub parse_full {
     return;
   }
 
-  my $format = "ll". "ql" . "l" . "ql" . "llll" . "l" . "llllllllll";
-  my $message = pack( $format, 
-		  $mode,      $count,      $remote_sec,  $remote_usec,
-		  0,          $local_sec,  $local_usec,  $leap,
-		  $precision, $nsamples,   $valid,       0,
-		  0,          0,           0,            0,
-		  0,          0,           0,            0,
-		  0,          0);
+  my $message = ntp_message($remote_sec, $remote_usec, $local_sec, $local_usec);
+
   my $local = $local_sec + ($local_usec / 1000000);
   my $remote = $remote_sec + ($remote_usec / 1000000);
   push(@samples, {
     offset => $remote - $local,
     local => $local,
     remote => $remote,
-    message => $message
+    message => $message,
+    st_interval => $st_interval
   });
-  if($sample_start < $now->[0]-15 and defined($st_interval)) {
+
+  if(defined($st_interval)) { # only on top-of-the-second pps
+    check_for_sample_complete($shmid,$local_sec);
+  }
+
+  return $remote - $local;
+}
+
+my($last_samples);
+sub check_for_sample_complete {
+  my($shmid,$local_sec) = @_;
+
+  if($sample_start < $local_sec-15) {
     @samples = sort { $a->{offset} <=> $b->{offset} } @samples;
     if(@samples > 7) { # we had coverage for more than half the time period
       # use the median sample
       send_time_to_ntp($shmid,$samples[int(@samples/2)]);
     }
-    printf LOGFILE ("%d %0.6f %0.6f %d %d %d %d %d %d %d %d\n",time(),$samples[0]{offset},$samples[-1]{offset},$#samples,$gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr},$gps_info{fixtype},$gps_info{valid},$st_interval,$usb_polls);
+    printf LOGFILE ("%d %0.6f %0.6f %d %d %d %d %d %d %d\n",time(),$samples[0]{offset},$samples[-1]{offset},$#samples,$gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr},$gps_info{fixtype},$gps_info{valid},int($st_interval_estimate));
     if($samples[-1]{offset}-$samples[0]{offset} > 0.001 or $#samples != $last_samples) {
       printf("min = %0.6f max = %0.6f size=%0.6f count=%d hz=%d\n",$samples[0]{offset},$samples[-1]{offset},$samples[-1]{offset}-$samples[0]{offset},$#samples,$st_interval_estimate);
       $last_samples = $#samples;
     }
     print PPSSAMPLES time()." ".join(" ", map { $_->{offset} *1000000 } @samples)."\n";
     @samples = ();
-    $sample_start = $now->[0];
+    $sample_start = $local_sec;
   }
-  return $remote - $local;
 }
 
 my(%last_counters);
