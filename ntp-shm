@@ -239,25 +239,44 @@ sub check_for_sample_complete {
   my($shmid,$local_sec) = @_;
 
   if($sample_start < $local_sec-15) {
-    @samples = sort { $a->{offset} <=> $b->{offset} } @samples;
+    print PPSSAMPLES time()." O ".join(" ", map { $_->{offset} * 1000000 } @samples)."\n";
+    print PPSSAMPLES "R ".join(" ", map { $_->{remote} } @samples)."\n";
+    my $ntp_info;
     if(@samples > 7) { # we had coverage for more than half the time period
-      # use the median sample
-      send_time_to_ntp($shmid,$samples[int(@samples/2)]);
+      $ntp_info = send_time_to_ntp($shmid,@samples);
     }
-    printf LOGFILE ("%d %0.6f %0.6f %d %d %d %d %d %d %d\n",time(),$samples[0]{offset},$samples[-1]{offset},$#samples,$gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr},$gps_info{fixtype},$gps_info{valid},int($st_interval_estimate));
+    @samples = sort { $a->{offset} <=> $b->{offset} } @samples;
+    printf LOGFILE ("%d %0.6f %0.6f %d %d %d %d %d %d %d %s\n",time(),$samples[0]{offset},$samples[-1]{offset},$#samples,$gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr},$gps_info{fixtype},$gps_info{valid},int($st_interval_estimate),$ntp_info);
     if($samples[-1]{offset}-$samples[0]{offset} > 0.001 or $#samples != $last_samples) {
       printf("min = %0.6f max = %0.6f size=%0.6f count=%d hz=%d\n",$samples[0]{offset},$samples[-1]{offset},$samples[-1]{offset}-$samples[0]{offset},$#samples,$st_interval_estimate);
       $last_samples = $#samples;
     }
-    print PPSSAMPLES time()." ".join(" ", map { $_->{offset} *1000000 } @samples)."\n";
     @samples = ();
     $sample_start = $local_sec;
   }
 }
 
-my(%last_counters);
+my(%last_counters,$running_avg);
 sub send_time_to_ntp {
-  my($shmid,$message) = @_;
+  my($shmid,@samples) = @_;
+
+  my(@valid);
+  for(my $i = 0; $i < @samples; $i++) {
+    if(abs($running_avg-$samples[$i]{offset}) < 0.000010) { # sample is within 10us
+      push(@valid, $samples[$i]);
+    }
+  }
+  if(not @valid) {
+    print STDERR "reset running avg at ".time()."\n";
+    @valid = sort { $a->{offset} <=> $b->{offset} } @samples;
+    $running_avg = $valid[int(@valid/2)];
+    return send_time_to_ntp($shmid,@samples); # there's now at least 1 sample within 10us of running_avg
+  }
+
+  @valid = sort { $a->{offset} <=> $b->{offset} } @valid;
+  my $message = $valid[int(@valid/2)];
+  my $valid_pct = @valid/@samples*100;
+  $running_avg = $running_avg * .5 + $message->{offset} * .5; # weighted average
 
   my $len = length($message->{message});
   die "wrong message length" unless($len == 96);
@@ -274,6 +293,8 @@ sub send_time_to_ntp {
     %last_counters = %counters;
   }
   %counters = ();
+  
+  return $valid_pct." ".$running_avg." ".$message->{offset};
 }
 
 my $shmid = shmget(NTP_SHMID, 96, S_IRUSR | S_IWUSR);
