@@ -29,9 +29,8 @@ void before_usb_poll() {
     VCP_send_buffer((uint8_t *)"P", 1);
     pending_usb_time++;
   } else {
-    pending_usb_time++;
-    if(pending_usb_time == 1) { // wrap
-      pending_usb_time = 2;
+    if(pending_usb_time < 60000) { // avoid wrapping
+      pending_usb_time++;
     }
   }
 }
