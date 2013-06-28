@@ -34,6 +34,7 @@ my(%gps_info,%counters);
 my(@fixtypes) = ("??","no fix","2D fix","3D fix");
 my($last_lock) = 0;
 my $gps_line;
+my $gps_lock;
 sub parseline_time {
   my($now,$line,$interval) = @_;
 
@@ -61,6 +62,7 @@ sub parseline_time {
       print "GPS lock from ".$fixtypes[$last_lock]." to ".$fixtypes[$fixtype]."\n";
       $last_lock = $fixtype;
     }
+    $gps_lock = $fixtype > 1;
     if($fixtype == 1) {
       print "sats: $satcount, $avgsnr\n";
     }
@@ -89,6 +91,11 @@ sub parseline {
   if($interval > 1.003 or $interval < 0.997) {
     print "skip (local timer=$interval s)\n";
     return; # skip un-even pulses
+  }
+
+  if(not $gps_lock) {
+    print "skip (no gps lock)\n";
+    return;
   }
 
   my($time_pps, $time_now, $st_interval, $usb_time, $usb_polls);
@@ -269,7 +276,7 @@ sub send_time_to_ntp {
   if(not @valid) {
     print STDERR "reset running avg at ".time()."\n";
     @valid = sort { $a->{offset} <=> $b->{offset} } @samples;
-    $running_avg = $valid[int(@valid/2)];
+    $running_avg = $valid[int(@valid/2)]->{offset};
     return send_time_to_ntp($shmid,@samples); # there's now at least 1 sample within 10us of running_avg
   }
 
