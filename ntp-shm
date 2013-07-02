@@ -21,6 +21,9 @@ use Time::HiRes qw(gettimeofday tv_interval usleep);
 use Time::Local qw(timegm);
 use IPC::SysV qw(IPC_PRIVATE IPC_RMID S_IRUSR S_IWUSR);
 use IO::Handle;
+use FindBin;
+use lib "$FindBin::Bin/perl-lib";
+use USBGPS::Filter;
 use Inline "C";
 use constant {
   NTP_SHMID => 0x4e545030
@@ -81,7 +84,7 @@ my $sample_start = time();
 my(@samples);
 my $last_time_pps = undef;
 sub parseline {
-  my($shmid, $line, $now, $interval) = @_;
+  my($filter, $shmid, $line, $now, $interval) = @_;
 
   if($line =~ /^G [\d,]+/) {
     parseline_time($now,$line,$interval);
@@ -101,14 +104,14 @@ sub parseline {
   my($time_pps, $time_now, $st_interval, $usb_time, $usb_polls);
   if($line =~ /^P (\d+) (\d+) (\d+) (\d+) (\d+)/) {
     ($time_pps, $time_now, $st_interval, $usb_time, $usb_polls) = ($1,$2,$3,$4,$5);
-    my $offset = parse_full($now, $shmid, $time_pps, $time_now, $st_interval, $usb_time, $usb_polls);
+    my $offset = parse_full($filter, $now, $shmid, $time_pps, $time_now, $st_interval, $usb_time, $usb_polls);
     if(abs($offset) > 0.0001) {
       chomp($line);
       print "$offset/$line/$st_interval_estimate/$gps_line/$gps_time/".$now->[0]."\n"; 
     }
   } elsif($line =~ /^P (\d+) (\d+)$/) {
     ($time_now, $usb_time) = ($1,$2);
-    my $offset = parse_full($now, $shmid, undef, $time_now, undef, $usb_time, undef);
+    my $offset = parse_full($filter, $now, $shmid, undef, $time_now, undef, $usb_time, undef);
     if(abs($offset) > 0.0001) {
       chomp($line);
       print "$offset/$line/$st_interval_estimate/$last_time_pps/$gps_line/$gps_time/".$now->[0]."\n"; 
@@ -174,7 +177,7 @@ sub ntp_message {
 }
 
 sub parse_full {
-  my($now, $shmid, $time_pps, $time_now, $st_interval, $usb_time, $usb_polls) = @_;
+  my($filter, $now, $shmid, $time_pps, $time_now, $st_interval, $usb_time, $usb_polls) = @_;
 
   if(defined($time_pps)) {
     $last_time_pps = $time_pps;
@@ -235,7 +238,7 @@ sub parse_full {
   });
 
   if(defined($st_interval)) { # only on top-of-the-second pps
-    check_for_sample_complete($shmid,$local_sec);
+    check_for_sample_complete($filter, $shmid,$local_sec);
   }
 
   return $remote - $local;
@@ -243,14 +246,14 @@ sub parse_full {
 
 my($last_samples);
 sub check_for_sample_complete {
-  my($shmid,$local_sec) = @_;
+  my($filter,$shmid,$local_sec) = @_;
 
   if($sample_start < $local_sec-15) {
     print PPSSAMPLES time()." O ".join(" ", map { $_->{offset} * 1000000 } @samples)."\n";
     print PPSSAMPLES "R ".join(" ", map { $_->{remote} } @samples)."\n";
     my $ntp_info;
     if(@samples > 7) { # we had coverage for more than half the time period
-      $ntp_info = send_time_to_ntp($shmid,@samples);
+      $ntp_info = send_time_to_ntp($filter,$shmid,@samples);
     }
     @samples = sort { $a->{offset} <=> $b->{offset} } @samples;
     printf LOGFILE ("%d %0.6f %0.6f %d %d %d %d %d %d %d %s\n",time(),$samples[0]{offset},$samples[-1]{offset},$#samples,$gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr},$gps_info{fixtype},$gps_info{valid},int($st_interval_estimate),$ntp_info);
@@ -263,27 +266,11 @@ sub check_for_sample_complete {
   }
 }
 
-my(%last_counters,$running_avg);
+my(%last_counters,$running_avg,@filter_performance_history);
 sub send_time_to_ntp {
-  my($shmid,@samples) = @_;
+  my($filter,$shmid,@samples) = @_;
 
-  my(@valid);
-  for(my $i = 0; $i < @samples; $i++) {
-    if(abs($running_avg-$samples[$i]{offset}) < 0.000010) { # sample is within 10us
-      push(@valid, $samples[$i]);
-    }
-  }
-  if(not @valid) {
-    print STDERR "reset running avg at ".time()."\n";
-    @valid = sort { $a->{offset} <=> $b->{offset} } @samples;
-    $running_avg = $valid[int(@valid/2)]->{offset};
-    return send_time_to_ntp($shmid,@samples); # there's now at least 1 sample within 10us of running_avg
-  }
-
-  @valid = sort { $a->{offset} <=> $b->{offset} } @valid;
-  my $message = $valid[int(@valid/2)];
-  my $valid_pct = @valid/@samples*100;
-  $running_avg = $running_avg * .5 + $message->{offset} * .5; # weighted average
+  my($message,$filter_stats) = $filter->filter(\@samples);
 
   my $len = length($message->{message});
   die "wrong message length" unless($len == 96);
@@ -301,7 +288,7 @@ sub send_time_to_ntp {
   }
   %counters = ();
   
-  return $valid_pct." ".$running_avg." ".$message->{offset};
+  return sprintf("%0.6f %s",$message->{offset},$filter_stats);
 }
 
 my $shmid = shmget(NTP_SHMID, 96, S_IRUSR | S_IWUSR);
@@ -319,6 +306,7 @@ PPSSAMPLES->autoflush(1);
 # ^mark
 # G fixtype,fixsatcount,satcount,avgsnr,day,month,year,hour,minute,second,valid,timestamp
 my($now, @last, $line);
+my $filter = new USBGPS::Filter();
 my $last_p = 1;
 while(my($char,$now_s,$now_us,$ioctl_status) = timeread(fileno(STDIN))) {
   $now = [$now_s,$now_us];
@@ -343,7 +331,7 @@ while(my($char,$now_s,$now_us,$ioctl_status) = timeread(fileno(STDIN))) {
   }
   if($line =~ /^P/ and $ioctl_status < 0) { # throw it away
   } else {
-    parseline($shmid, $line, $now, $interval);
+    parseline($filter, $shmid, $line, $now, $interval);
   }
 }
 
