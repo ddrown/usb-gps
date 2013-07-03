@@ -1,7 +1,7 @@
 Build environment:
 
 summon-arm-toolchain - https://github.com/esden/summon-arm-toolchain.git
-perl on PC with the perl module "Inline::C"
+perl on PC with the perl modules "Inline::C" and "Moose"
 
 use "make" to build the STM32F4 code.  Flash with st-link utility (I've had the best success with their windows tool)
 

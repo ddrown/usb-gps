@@ -18,12 +18,14 @@
 
 use strict;
 use Time::HiRes qw(gettimeofday tv_interval usleep);
-use Time::Local qw(timegm);
 use IPC::SysV qw(IPC_PRIVATE IPC_RMID S_IRUSR S_IWUSR);
 use IO::Handle;
 use FindBin;
 use lib "$FindBin::Bin/perl-lib";
 use USBGPS::Filter;
+use USBGPS::SerialData;
+use USBGPS::ClockSample::PPS;
+use USBGPS::ClockSample::MidSecond;
 use Inline "C";
 use constant {
   NTP_SHMID => 0x4e545030
@@ -31,63 +33,12 @@ use constant {
 
 my $st_interval_estimate = 10500000; # frequency of the timer on the microcontroller
 
-my $gps_time;
-my $gps_time_timestamp;
-my(%gps_info,%counters);
-my(@fixtypes) = ("??","no fix","2D fix","3D fix");
-my($last_lock) = 0;
-my $gps_line;
-my $gps_lock;
-sub parseline_time {
-  my($now,$line,$interval) = @_;
-
-  # G 3,6,8,27,3,38,32,2,6,13,1,3764701747
-  if($line =~ /^G (\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+),(\d+)/) {
-    my($fixtype,$fixsatcount,$satcount,$avgsnr,$hour,$minute,$second,$day,$month,$year,$valid,$timestamp) = ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12);
-
-    my $new_gps_time = timegm($second,$minute,$hour,$day,$month-1,$year); 
-    if($gps_time == $new_gps_time) {
-      print "GPS time matches last gps time($gps_time) HZnow=",$timestamp," HZthen=",$gps_time_timestamp,"\n";
-      return; # throw away repeat timestamps, TODO: debug this on the microcontroller
-    }
-    $gps_time = $new_gps_time;
-    $gps_time_timestamp = $timestamp;
-
-    chomp($line);
-    $gps_line = $line;
-    if($gps_time != $now->[0]) {
-      print "GPS Time Off: $gps_time != ".$now->[0]."/$gps_line\n";
-      $counters{gps_off}++;
-    } else {
-      $counters{gps_ok}++;
-    }
-    if($last_lock != $fixtype) {
-      print "GPS lock from ".$fixtypes[$last_lock]." to ".$fixtypes[$fixtype]."\n";
-      $last_lock = $fixtype;
-    }
-    $gps_lock = $fixtype > 1;
-    if($fixtype == 1) {
-      print "sats: $satcount, $avgsnr\n";
-    }
-
-    %gps_info = (
-        fixsatcount => $fixsatcount,
-        satcount => $satcount,
-        avgsnr => $avgsnr,
-        fixtype => $fixtype,
-        valid => $valid
-        );
-  }
-}
-
-my $sample_start = time();
-my(@samples);
-my $last_time_pps = undef;
+my $last_pps_obj;
 sub parseline {
-  my($filter, $shmid, $line, $now, $interval) = @_;
+  my($filter, $SerialData, $shmid, $line, $now, $interval) = @_;
 
   if($line =~ /^G [\d,]+/) {
-    parseline_time($now,$line,$interval);
+    $SerialData->parse($now,$line,$interval);
     return;
   }
 
@@ -96,25 +47,59 @@ sub parseline {
     return; # skip un-even pulses
   }
 
-  if(not $gps_lock) {
+  if(not $SerialData->state->lock) {
     print "skip (no gps lock)\n";
     return;
   }
 
-  my($time_pps, $time_now, $st_interval, $usb_time, $usb_polls);
   if($line =~ /^P (\d+) (\d+) (\d+) (\d+) (\d+)/) {
-    ($time_pps, $time_now, $st_interval, $usb_time, $usb_polls) = ($1,$2,$3,$4,$5);
-    my $offset = parse_full($filter, $now, $shmid, $time_pps, $time_now, $st_interval, $usb_time, $usb_polls);
-    if(abs($offset) > 0.0001) {
+    my($time_pps, $time_now, $st_interval, $usb_time, $usb_polls) = ($1,$2,$3,$4,$5);
+
+    if($st_interval > 10501000 or $st_interval < 10499999) {
+      print "skip (remote timer=$st_interval HZ)\n";
+      return; # skip PPS pulses that happen outside of a 500ppm window
+    }
+    $st_interval_estimate = $st_interval_estimate * 0.8 + $st_interval * 0.2;
+
+    $last_pps_obj = USBGPS::ClockSample::PPS->new(
+        time_pps => $time_pps,
+        time_now => $time_now,
+        st_interval => $st_interval,
+        st_interval_estimate => $st_interval_estimate,
+        usb_time => $usb_time,
+        usb_polls => $usb_polls,
+        now => $now,
+        GPSState => $SerialData->state
+        );
+    if(not $last_pps_obj->valid) {
+      $last_pps_obj = undef;
+      return;
+    }
+    check_for_sample_complete($filter, $SerialData->state, $last_pps_obj, $shmid, $now);
+    if(abs($last_pps_obj->offset) > 0.0001) {
       chomp($line);
-      print "$offset/$line/$st_interval_estimate/$gps_line/$gps_time/".$now->[0]."\n"; 
+      print $last_pps_obj->offset ."/$line/$st_interval_estimate/".$now->[0]."\n"; 
     }
   } elsif($line =~ /^P (\d+) (\d+)$/) {
-    ($time_now, $usb_time) = ($1,$2);
-    my $offset = parse_full($filter, $now, $shmid, undef, $time_now, undef, $usb_time, undef);
-    if(abs($offset) > 0.0001) {
+    my($time_now, $usb_time) = ($1,$2);
+    if(not defined($last_pps_obj)) {
+      print "partial time without pps sample\n";
+      return;
+    }
+    my $midsecond_obj = USBGPS::ClockSample::MidSecond->new(
+        time_now => $time_now,
+        usb_time => $usb_time,
+        pps_data => $last_pps_obj,
+        now => $now,
+        GPSState => $SerialData->state
+        );
+    if(not $midsecond_obj->valid) {
+      return;
+    }
+    check_for_sample_complete($filter, $SerialData->state, $midsecond_obj, $shmid, $now);
+    if(abs($midsecond_obj->offset) > 0.0001) {
       chomp($line);
-      print "$offset/$line/$st_interval_estimate/$last_time_pps/$gps_line/$gps_time/".$now->[0]."\n"; 
+      print $midsecond_obj->offset ."/$line/".$now->[0]."\n"; 
     }
   } else {
     print "bad line, $line\n";
@@ -122,173 +107,40 @@ sub parseline {
   }
 }
 
-sub addcounters {
-  my($amount,$name) = @_;
-
-  $counters{$name}++;
-  $counters{$name."_sum"} += $amount;
-  if(not defined($counters{$name."_min"}) or $amount < $counters{$name."_min"}) {
-    $counters{$name."_min"} = $amount;
-  }
-  if($amount > $counters{$name."_max"}) {
-    $counters{$name."_max"} = $amount;
-  }
-}
-
-sub gps_time_seconds {
-  my($gps_time,$gps_time_ms_ago) = @_;
-
-  my $remote_sec = $gps_time;
-  if($gps_time_ms_ago > 2700) {
-    print "skip (gps time longer than 2s ago=$gps_time_ms_ago ms)\n";
-    return undef;
-  } elsif($gps_time_ms_ago > 1700) {
-    $remote_sec += 2;
-    addcounters($gps_time_ms_ago,"over_2s");
-  } elsif($gps_time_ms_ago > 700) {
-    $remote_sec++;
-    addcounters($gps_time_ms_ago,"over_1s");
-  } else {
-    addcounters($gps_time_ms_ago,"under_1s");
-  }
- 
-  return $remote_sec;
-}
-
-sub ntp_message {
-  my($remote_sec,$remote_usec,$local_sec,$local_usec) = @_;
-
-  my $nsamples = 0;
-  my $valid = 1;
-  my $precision = -14;
-  my $leap = 0;
-  my $count = 0;
-  my $mode = 0;
-
-  my $format = "ll". "ql" . "l" . "ql" . "llll" . "l" . "llllllllll";
-  my $message = pack( $format, 
-		  $mode,      $count,      $remote_sec,  $remote_usec,
-		  0,          $local_sec,  $local_usec,  $leap,
-		  $precision, $nsamples,   $valid,       0,
-		  0,          0,           0,            0,
-		  0,          0,           0,            0,
-		  0,          0);
-  return $message;
-}
-
-sub parse_full {
-  my($filter, $now, $shmid, $time_pps, $time_now, $st_interval, $usb_time, $usb_polls) = @_;
-
-  if(defined($time_pps)) {
-    $last_time_pps = $time_pps;
-  } else {
-    if(defined($last_time_pps)) {
-      $time_pps = $last_time_pps;
-    } else {
-      print "partial time without last time pps\n";
-      return;
-    }
-  }
-
-  if(defined($usb_polls) and ($usb_polls < 499 or $usb_polls > 500)) {
-    print "polls: $usb_polls\n";
-  }
-  if(defined($st_interval)) {
-    if($st_interval > 10501000 or $st_interval < 10499999) {
-      print "skip (remote timer=$st_interval HZ)\n";
-      return; # skip PPS pulses that happen outside of a 500ppm window
-    }
-    $st_interval_estimate = $st_interval_estimate * 0.8 + $st_interval * 0.2;
-  }
-
-  my $gps_time_hz_ago = $time_now - $gps_time_timestamp;
-  if($gps_time_hz_ago < 0) { # counter wrap
-    $gps_time_hz_ago += 2**32;
-  }
-  my $gps_time_ms_ago = $gps_time_hz_ago/$st_interval_estimate*1000;
-  $gps_time_ms_ago += 700; # serial time is ~700ms off
-
-  my $local_sec = $now->[0];
-  my $local_usec = $now->[1];
-
-  my $remote_sec = gps_time_seconds($gps_time,$gps_time_ms_ago);
-  if(not defined($remote_sec)) {
-    return;
-  }
-  my $hz_past_0us = $time_now - $time_pps + $usb_time;
-  if($time_now < $time_pps) { # counter wrap
-    $hz_past_0us += 2**32;
-  }
-  my $remote_usec = int($hz_past_0us/$st_interval_estimate*1000000);
-  if($remote_usec > 1000000) {
-    print "partial counter misfire\n";
-    return;
-  }
-
-  my $message = ntp_message($remote_sec, $remote_usec, $local_sec, $local_usec);
-
-  my $local = $local_sec + ($local_usec / 1000000);
-  my $remote = $remote_sec + ($remote_usec / 1000000);
-  push(@samples, {
-    offset => $remote - $local,
-    local => $local,
-    remote => $remote,
-    message => $message,
-    st_interval => $st_interval
-  });
-
-  if(defined($st_interval)) { # only on top-of-the-second pps
-    check_for_sample_complete($filter, $shmid,$local_sec);
-  }
-
-  return $remote - $local;
-}
-
+my $sample_start = time();
+my(@samples);
 my($last_samples);
 sub check_for_sample_complete {
-  my($filter,$shmid,$local_sec) = @_;
+  my($filter, $GPSState, $clocksample, $shmid, $now) = @_;
 
-  if($sample_start < $local_sec-15) {
-    print PPSSAMPLES time()." O ".join(" ", map { $_->{offset} * 1000000 } @samples)."\n";
-    print PPSSAMPLES "R ".join(" ", map { $_->{remote} } @samples)."\n";
+  push(@samples, $clocksample);
+
+  if($sample_start < $now->[0] - 15) {
+    print PPSSAMPLES time()." O ".join(" ", map { $_->offset * 1000000 } @samples)."\n";
+    print PPSSAMPLES "R ".join(" ", map { $_->remote_time->float } @samples)."\n";
     my $ntp_info;
     if(@samples > 7) { # we had coverage for more than half the time period
       $ntp_info = send_time_to_ntp($filter,$shmid,@samples);
     }
-    @samples = sort { $a->{offset} <=> $b->{offset} } @samples;
-    printf LOGFILE ("%d %0.6f %0.6f %d %d %d %d %d %d %d %s\n",time(),$samples[0]{offset},$samples[-1]{offset},$#samples,$gps_info{fixsatcount}, $gps_info{satcount}, $gps_info{avgsnr},$gps_info{fixtype},$gps_info{valid},int($st_interval_estimate),$ntp_info);
-    if($samples[-1]{offset}-$samples[0]{offset} > 0.001 or $#samples != $last_samples) {
-      printf("min = %0.6f max = %0.6f size=%0.6f count=%d hz=%d\n",$samples[0]{offset},$samples[-1]{offset},$samples[-1]{offset}-$samples[0]{offset},$#samples,$st_interval_estimate);
+    @samples = sort { $a->offset <=> $b->offset } @samples;
+    printf LOGFILE ("%d %0.6f %0.6f %d %s %d %s\n",time(),$samples[0]->offset,$samples[-1]->offset,$#samples,$GPSState->logfile_string(),int($st_interval_estimate),$ntp_info);
+    if($samples[-1]->offset - $samples[0]->offset > 0.001 or $#samples != $last_samples) {
+      printf("min = %0.6f max = %0.6f size=%0.6f count=%d hz=%d\n",$samples[0]->offset,$samples[-1]->offset,$samples[-1]->offset - $samples[0]->offset,$#samples,$st_interval_estimate);
       $last_samples = $#samples;
     }
     @samples = ();
-    $sample_start = $local_sec;
+    $sample_start = $now->[0];
   }
 }
 
-my(%last_counters,$running_avg,@filter_performance_history);
 sub send_time_to_ntp {
   my($filter,$shmid,@samples) = @_;
 
-  my($message,$filter_stats) = $filter->filter(\@samples);
+  my($sample,$filter_stats) = $filter->filter(\@samples);
 
-  my $len = length($message->{message});
-  die "wrong message length" unless($len == 96);
-  my $ret = shmwrite($shmid, $message->{message}, 0, $len) || die("$!");
+  $sample->ntp_message->send_to_ntp($shmid);
 
-  if($last_counters{over_2s} != $counters{over_2s} or $last_counters{over_1s} != $counters{over_1s} or $last_counters{under_1s} != $counters{under_1s} or $last_counters{gps_off} != $counters{gps_off}) {
-    printf("Sent offset %+0.6f +2s=%d(%d/%d) +1s=%d(%d/%d) -1s=%d(%d/%d) GPS(%d/%d) %s\n", $message->{offset},
-        $counters{over_2s}, $counters{over_2s_min}, $counters{over_2s_max},
-        $counters{over_1s}, $counters{over_1s_min}, $counters{over_1s_max},
-        $counters{under_1s}, $counters{under_1s_min}, $counters{under_1s_max},
-        $counters{gps_off}, $counters{gps_ok},
-        $fixtypes[$gps_info{fixtype}]
-        );
-    %last_counters = %counters;
-  }
-  %counters = ();
-  
-  return sprintf("%0.6f %s",$message->{offset},$filter_stats);
+  return sprintf("%0.6f %s",$sample->offset,$filter_stats);
 }
 
 my $shmid = shmget(NTP_SHMID, 96, S_IRUSR | S_IWUSR);
@@ -307,6 +159,7 @@ PPSSAMPLES->autoflush(1);
 # G fixtype,fixsatcount,satcount,avgsnr,day,month,year,hour,minute,second,valid,timestamp
 my($now, @last, $line);
 my $filter = new USBGPS::Filter();
+my $SerialData = new USBGPS::SerialData();
 my $last_p = 1;
 while(my($char,$now_s,$now_us,$ioctl_status) = timeread(fileno(STDIN))) {
   $now = [$now_s,$now_us];
@@ -331,7 +184,7 @@ while(my($char,$now_s,$now_us,$ioctl_status) = timeread(fileno(STDIN))) {
   }
   if($line =~ /^P/ and $ioctl_status < 0) { # throw it away
   } else {
-    parseline($filter, $shmid, $line, $now, $interval);
+    parseline($filter, $SerialData, $shmid, $line, $now, $interval);
   }
 }
 

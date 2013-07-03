@@ -60,21 +60,21 @@ sub filter {
   my $this_filter_window = $self->filter_window; # keep it to return it
   my(@valid);
   for(my $i = 0; $i < @$samples; $i++) {
-    if(abs($self->running_avg - $samples->[$i]{offset}) < $self->filter_window) {
+    if(abs($self->running_avg - $samples->[$i]->offset) < $self->filter_window) {
       push(@valid, $samples->[$i]);
     }
   }
   if(not @valid) {
     print STDERR "reset running avg at ".time()."\n";
-    @valid = sort { $a->{offset} <=> $b->{offset} } @$samples;
-    $self->update_filter(0,$valid[int(@valid/2)]->{offset});
+    @valid = sort { $a->offset <=> $b->offset } @$samples;
+    $self->update_filter(0,$valid[int(@valid/2)]->offset);
     return $self->filter($samples); # there's now at least 1 sample within 10us of running_avg
   }
 
-  @valid = sort { $a->{offset} <=> $b->{offset} } @valid;
+  @valid = sort { $a->offset <=> $b->offset } @valid;
   my $message = $valid[int(@valid/2)];
   my $valid_pct = @valid/@$samples*100;
-  $self->update_filter($valid_pct,$message->{offset});
+  $self->update_filter($valid_pct,$message->offset);
 
   return ($message, sprintf("%d %0.6f %0.6f",$valid_pct,$this_filter_window,$self->running_avg));
 }
