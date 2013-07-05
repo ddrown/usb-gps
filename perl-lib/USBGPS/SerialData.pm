@@ -23,7 +23,7 @@ sub parse {
     my($fixtype,$fixsatcount,$satcount,$avgsnr,$hour,$minute,$second,$day,$month,$year,$valid,$timestamp) = ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12);
 
     my $last_gps_state = $self->state;
-    $self->state(USBGPS::GPSState->new(
+    my $new_gps_state = USBGPS::GPSState->new(
           second => $second,
           minute => $minute,
           hour => $hour,
@@ -36,12 +36,14 @@ sub parse {
           avgsnr => $avgsnr,
           valid => $valid,
           time_timestamp => $timestamp
-          ));
+          );
 
-    if(defined($last_gps_state->epoch) and $last_gps_state->epoch == $self->state->epoch) {
-      print "GPS time matches last gps time(". $self->state->epoch .") HZnow=",$timestamp," HZthen=",$last_gps_state->time_timestamp,"\n";
+    if(defined($last_gps_state->epoch) and $last_gps_state->epoch == $new_gps_state->epoch) {
+      print "GPS time matches last gps time(". $new_gps_state->epoch .") HZnow=",$timestamp," HZthen=",$last_gps_state->time_timestamp,"\n";
       return; # throw away repeat timestamps, TODO: debug this on the microcontroller
     }
+
+    $self->state($new_gps_state);
 
     chomp($line);
     $self->gps_line($line);
