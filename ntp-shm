@@ -22,7 +22,7 @@ use IPC::SysV qw(IPC_PRIVATE IPC_RMID S_IRUSR S_IWUSR);
 use IO::Handle;
 use FindBin;
 use lib "$FindBin::Bin/perl-lib";
-use USBGPS::Filter;
+use USBGPS::Filter::Percentile;
 use USBGPS::SerialData;
 use USBGPS::ClockSample::PPS;
 use USBGPS::ClockSample::MidSecond;
@@ -123,7 +123,11 @@ sub check_for_sample_complete {
       $ntp_info = send_time_to_ntp($filter,$shmid,@samples);
     }
     @samples = sort { $a->offset <=> $b->offset } @samples;
-    printf LOGFILE ("%d %0.6f %0.6f %d %s %d %s\n",time(),$samples[0]->offset,$samples[-1]->offset,$#samples,$GPSState->logfile_string(),int($st_interval_estimate),$ntp_info);
+    my $st_interval;
+    if(defined($last_pps_obj)) {
+      $st_interval = $last_pps_obj->st_interval;
+    }
+    printf LOGFILE ("%d %0.6f %0.6f %d %s %d %s\n",time(),$samples[0]->offset,$samples[-1]->offset,$#samples,$GPSState->logfile_string(),$st_interval,$ntp_info);
     if($samples[-1]->offset - $samples[0]->offset > 0.001 or $#samples != $last_samples) {
       printf("min = %0.6f max = %0.6f size=%0.6f count=%d hz=%d\n",$samples[0]->offset,$samples[-1]->offset,$samples[-1]->offset - $samples[0]->offset,$#samples,$st_interval_estimate);
       $last_samples = $#samples;
@@ -158,7 +162,7 @@ PPSSAMPLES->autoflush(1);
 # ^mark
 # G fixtype,fixsatcount,satcount,avgsnr,day,month,year,hour,minute,second,valid,timestamp
 my($now, @last, $line);
-my $filter = new USBGPS::Filter();
+my $filter = new USBGPS::Filter::Percentile();
 my $SerialData = new USBGPS::SerialData();
 my $last_p = 1;
 while(my($char,$now_s,$now_us,$ioctl_status) = timeread(fileno(STDIN))) {
