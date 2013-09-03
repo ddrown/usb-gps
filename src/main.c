@@ -13,6 +13,7 @@
 #include "pps.h"
 #include "mytimer.h"
 #include "uart.h"
+#include "lcd.h"
 
 // Private variables
 __ALIGN_BEGIN USB_OTG_CORE_HANDLE  USB_OTG_dev __ALIGN_END;
@@ -60,7 +61,16 @@ void init() {
 
   UART_init();
 
+  I2C_init();
+
+  setup_LCD();
+
+  LCD_print_char('o');
+
   USBD_Init(&USB_OTG_dev, USB_OTG_FS_CORE_ID, &USR_desc, &USBD_CDC_cb, &USR_cb);
+
+  LCD_print_char('o');
+  LCD_print_char('t');
 }
 
 /*

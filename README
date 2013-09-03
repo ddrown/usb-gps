@@ -11,13 +11,14 @@ Hardware setup:
 STM32F4 discovery board
 Fastrax UP501 GPS
 some 3.3V power source
+20x4 LCD display connected via i2c gpio expander (I used sainsmart's)
 
 wire GPS PPS pin to PA1 on the STM32F4 board
 wire GPS serial to STM32F4's UART: GPS RX=STM32F4 PA2, GPS TX=STM32F4 PA3
 wire power of GPS to a 3.3V supply (STM32F4 "3V" is 2.9V, and will not work)
 connect STM32F4's USB port to PC
 power STM32F4 via its debug USB port or via the 5V pin
-
+wire LCD display to PA8=scl, PC9=sda and use external pull-up resistors to 5V
 
 NTP setup:
 

@@ -6,6 +6,8 @@
 #include "pps.h"
 #include "usbd_cdc_vcp.h"
 #include "uart.h"
+#include "lcd.h"
+#include "lcdprint.h"
 
 static __IO uint32_t LastPPSTime;
 static __IO uint8_t PendingPPSTime = 0;
@@ -35,12 +37,13 @@ void before_usb_poll() {
   }
 }
 
+static uint32_t hz;
 void after_usb_poll() {
   static uint32_t pps_before_that = 0;
-
   if(pending_usb_time == 1) {
     int32_t diff = TIM_GetCounter(TIM2) - start_usb;
-    printf(" %lu %lu %ld %ld %u\n",LastPPSTime,start_usb,LastPPSTime-pps_before_that, diff, last_usb_time);
+    hz = LastPPSTime-pps_before_that;
+    printf(" %lu %lu %ld %ld %u\n", LastPPSTime, start_usb, hz, diff, last_usb_time);
     pps_before_that = LastPPSTime;
   } else if(pending_usb_time == 251) {
     int32_t diff = TIM_GetCounter(TIM2) - start_usb;
@@ -48,8 +51,14 @@ void after_usb_poll() {
   }
 }
 
+uint32_t ms_since_last_pps() {
+  uint32_t diff = TIM_GetCounter(TIM2) - LastPPSTime;
+  return diff / (hz/1000);
+}
+
+// reserve a 25 SOF (~50ms) window for the PPS messages
 uint8_t clear_to_print() {
-  return pending_usb_time < 245 || (pending_usb_time > 255 && pending_usb_time < 495) || pending_usb_time > 505;
+  return pending_usb_time < 225 || (pending_usb_time > 275 && pending_usb_time < 525) || pending_usb_time > 510;
 }
 
 void TIM2_CC2_IRQ() {

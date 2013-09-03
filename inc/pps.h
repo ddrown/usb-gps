@@ -8,6 +8,7 @@ void before_usb_poll();
 void after_usb_poll();
 
 uint8_t clear_to_print();
+uint32_t ms_since_last_pps();
 
 void TIM2_CC2_IRQ();
 

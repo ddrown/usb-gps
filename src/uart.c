@@ -10,6 +10,8 @@
 #include "mytimer.h"
 #include "usbd_cdc_vcp.h"
 #include "pps.h"
+#include "lcd.h"
+#include "lcdprint.h"
 
 #define LINE_MAX 80
 #define LINES_COUNT 2
@@ -139,11 +141,11 @@ static void handle_gprmc(const char *line) {
     } else if(seen_commas == 1) {
       uint8_t *this_counter = NULL;
       if(i - last_comma_position < 3) {
-        this_counter = &gps_state.day;
+        this_counter = &gps_state.hour;
       } else if(i - last_comma_position < 5) {
-        this_counter = &gps_state.month;
+        this_counter = &gps_state.minute;
       } else if(i - last_comma_position < 7) {
-        this_counter = &gps_state.year;
+        this_counter = &gps_state.second;
       }
       if(this_counter && line[i] >= '0' && line[i] <= '9') {
         *this_counter = line[i] - '0' + *this_counter * 10;
@@ -155,11 +157,11 @@ static void handle_gprmc(const char *line) {
     } else if(seen_commas == 9) {
       uint8_t *this_counter = NULL;
       if(i - last_comma_position < 3) {
-        this_counter = &gps_state.hour;
+        this_counter = &gps_state.day;
       } else if(i - last_comma_position < 5) {
-        this_counter = &gps_state.minute;
+        this_counter = &gps_state.month;
       } else if(i - last_comma_position < 7) {
-        this_counter = &gps_state.second;
+        this_counter = &gps_state.year;
       }
       if(this_counter && line[i] >= '0' && line[i] <= '9') {
         *this_counter = line[i] - '0' + *this_counter * 10;
@@ -172,6 +174,70 @@ static void handle_gprmc(const char *line) {
 
 // $GPGGA,164013.006,,,,,0,0,,,M,,M,,*4F
 static void handle_gpgga(const char *line) {
+}
+
+static uint8_t last_second;
+static uint8_t saw_repeat = 0;
+static uint8_t line_len[4] = {0,0,0,0};
+static void gps_lcd_print() {
+  uint8_t linepos;
+  LCD_moveTo(0,0);
+  linepos = LCD_print_char('S'); // 0,0
+  linepos += LCD_print_uint(gps_state.fix_sat_count); // 2,0
+  linepos += LCD_print_char('/'); // 3,0
+  linepos += LCD_print_uint(gps_state.sat_count); // 5,0
+  linepos += LCD_print_char(' '); // 6,0
+  linepos += LCD_print_uint(gps_state.avg_snr); // 8,0
+  linepos += LCD_print_char(' '); // 9,0
+  if(gps_state.fix_type == 1) {
+    linepos += LCD_print_string("--"); // 11,0
+  } else if(gps_state.fix_type == 2) {
+    linepos += LCD_print_string("2D"); // 11,0
+  } else if(gps_state.fix_type == 3) {
+    linepos += LCD_print_string("3D"); // 11,0
+  }
+  linepos += LCD_print_string(gps_state.valid ? "VLD" : "INV"); // 14,0
+  if(saw_repeat) {
+    saw_repeat++; // loop out after 255
+    linepos += LCD_print_string(" RPT"); // 18,0
+  }
+  line_len[0] = LCD_spacepad(linepos, line_len[0]);
+  
+  LCD_moveTo(0,1);
+  linepos = LCD_print_char('D'); // 0,1
+  linepos += LCD_print_uint(gps_state.year); // 2,1
+  linepos += LCD_print_char('/'); // 3,1
+  if(gps_state.month < 10) {
+    linepos += LCD_print_char('0');
+  }
+  linepos += LCD_print_uint(gps_state.month); // 5,1
+  linepos += LCD_print_char('/'); // 6,1
+  if(gps_state.day < 10) {
+    linepos += LCD_print_char('0');
+  }
+  linepos += LCD_print_uint(gps_state.day); // 8,1
+  linepos += LCD_print_string(" T"); // 10,1
+  if(gps_state.hour < 10) {
+    linepos += LCD_print_char('0');
+  }
+  linepos += LCD_print_uint(gps_state.hour); // 12,1
+  linepos += LCD_print_char(':'); // 13,1
+  if(gps_state.minute < 10) {
+    linepos += LCD_print_char('0');
+  }
+  linepos += LCD_print_uint(gps_state.minute); // 15,1
+  linepos += LCD_print_char(':'); // 16,1
+  if(gps_state.second < 10) {
+    linepos += LCD_print_char('0');
+  }
+  linepos += LCD_print_uint(gps_state.second); // 18,1
+  line_len[1] = LCD_spacepad(linepos, line_len[1]);
+
+  LCD_moveTo(0,2);
+  linepos = LCD_print_char('P'); // 0,2
+  linepos += LCD_print_uint(ms_since_last_pps()); // 12,2
+  linepos += LCD_print_string("ms"); // 14,2
+  line_len[2] = LCD_spacepad(linepos, line_len[2]);
 }
 
 void mainloop_uart() {
@@ -191,10 +257,18 @@ void mainloop_uart() {
     }
   }
 
+  // avoid filling USB buffer if the PPS is coming
   if(clear_to_print() && gps_state.done == 1) {
+    if(last_second == gps_state.second) {
+      saw_repeat = 1;
+    }
+    gps_lcd_print(); // TODO: ~33ms and might conflict with P message
     printf("G %u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%lu\n", gps_state.fix_type, gps_state.fix_sat_count, gps_state.sat_count, gps_state.avg_snr,
-        gps_state.day, gps_state.month, gps_state.year, gps_state.hour, gps_state.minute, gps_state.second, gps_state.valid,
+        gps_state.hour, gps_state.minute, gps_state.second, 
+        gps_state.day, gps_state.month, gps_state.year, 
+        gps_state.valid,
         gps_state.time_timestamp);
+    last_second = gps_state.second;
     gps_state.done = 0;
   }
 }

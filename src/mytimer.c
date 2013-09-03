@@ -57,6 +57,14 @@ void Delay(__IO uint32_t msWait) {
   while(TimingDelay != 0);
 }
 
+// roughly 168mhz with 8 instructions per loop
+#define ONE_US 21
+void DelayUS(__IO uint32_t usWait) {
+  usWait *= ONE_US;
+  while(usWait--) {
+  }
+}
+
 // called by SysTick
 void TimingDelay_Decrement(void) {
   if (TimingDelay != 0x00) { 

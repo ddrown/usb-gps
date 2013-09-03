@@ -1,6 +1,6 @@
 # Sources
 
-SRCS = main.c pps.c mytimer.c uart.c
+SRCS = main.c pps.c mytimer.c uart.c lcd.c lcdprint.c
 SRCS += stm32f4xx_it.c system_stm32f4xx.c syscalls.c
 
 # USB
