@@ -13,7 +13,7 @@ uint8_t LCD_print_string(const char *str) {
 }
 
 #define MAX_INT_CHRS 12
-uint8_t LCD_print_uint(uint32_t number) {
+uint8_t LCD_print_uint(uint32_t number, uint8_t fixedlen) {
   char intstr[MAX_INT_CHRS];
   uint8_t p = MAX_INT_CHRS;
 
@@ -30,10 +30,16 @@ uint8_t LCD_print_uint(uint32_t number) {
     p--;
     number = number / 10;
   }
+  if(fixedlen > 0) {
+    while(fixedlen > (MAX_INT_CHRS-p-1) && fixedlen < (MAX_INT_CHRS-1)) {
+      intstr[p-1] = '0';
+      p--;
+    }
+  }
   return LCD_print_string(intstr+p);
 }
 
-uint8_t LCD_print_int(int32_t number) {
+uint8_t LCD_print_int(int32_t number, uint8_t fixedlen) {
   char intstr[MAX_INT_CHRS];
   uint8_t negative = 0;
   uint8_t p = MAX_INT_CHRS;
@@ -57,6 +63,12 @@ uint8_t LCD_print_int(int32_t number) {
     }
     p--;
     number = number / 10;
+  }
+  if(fixedlen > 0) {
+    while(fixedlen > (MAX_INT_CHRS-p-1) && fixedlen < (MAX_INT_CHRS-1)) {
+      intstr[p-1] = '0';
+      p--;
+    }
   }
   if(negative && p > 0) {
     intstr[p-1] = '-';
