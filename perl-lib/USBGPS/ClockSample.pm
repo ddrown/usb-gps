@@ -6,7 +6,7 @@ use USBGPS::NTPMessage;
 
 has "remote_time" => (
     is => "ro",
-    isa => "USBGPS::Timestamp",
+    isa => "Maybe[USBGPS::Timestamp]",
     lazy => 1,
     builder => "_build_remote_time"
     );

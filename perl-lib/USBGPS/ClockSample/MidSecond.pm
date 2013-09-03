@@ -41,26 +41,30 @@ sub _build_local_time {
 sub _build_remote_time {
   my($self) = @_;
 
-  my $counter_hz = $self->pps_data->st_interval_estimate;
+  my $retval;
+  eval {
+    my $counter_hz = $self->pps_data->st_interval_estimate;
 
-  my $remote_sec = $self->GPSState->counter_adjust($self->time_now, $counter_hz);
-  if(not defined($remote_sec)) {
-    return undef; # GPSState rejected the sample
-  }
-  my $hz_past_0us = $self->time_now - $self->pps_data->time_pps + $self->usb_time;
-  if($self->time_now < $self->pps_data->time_pps) { # counter wrap
-    $hz_past_0us += 2**32;
-  }
-  my $remote_usec = int($hz_past_0us/$counter_hz*1000000);
-  if($remote_usec > 1000000) {
-    print "partial counter misfire\n";
-    return undef;
-  }
+    my $remote_sec = $self->GPSState->counter_adjust($self->time_now, $counter_hz);
+    if(not defined($remote_sec)) {
+      return undef; # GPSState rejected the sample
+    }
+    my $hz_past_0us = $self->time_now - $self->pps_data->time_pps + $self->usb_time;
+    if($self->time_now < $self->pps_data->time_pps) { # counter wrap
+      $hz_past_0us += 2**32;
+    }
+    my $remote_usec = int($hz_past_0us/$counter_hz*1000000);
+    if($remote_usec > 1000000) {
+      print "partial counter misfire\n";
+      return undef;
+    }
 
-  return USBGPS::Timestamp->new(
+    $retval = USBGPS::Timestamp->new(
       seconds => $remote_sec,
       micro_seconds => $remote_usec
       );
+  };
+  return $retval;
 }
 
 sub valid {
