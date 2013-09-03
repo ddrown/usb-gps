@@ -11,8 +11,13 @@
 
 static __IO uint32_t LastPPSTime;
 static __IO uint8_t PendingPPSTime = 0;
+static __IO uint8_t gps_lcd_print_go = 0;
 
 void mainloop_pps() {
+  if(gps_lcd_print_go) {
+    gps_lcd_print();
+    gps_lcd_print_go = 0;
+  }
 }
 
 static uint32_t start_usb;
@@ -46,7 +51,7 @@ void after_usb_poll() {
     printf(" %lu %lu %ld %ld %u\n", LastPPSTime, start_usb, hz, diff, last_usb_time);
     pps_before_that = LastPPSTime;
 
-    gps_lcd_print();
+    gps_lcd_print_go = 1;
   } else if(pending_usb_time == 251) {
     int32_t diff = TIM_GetCounter(TIM2) - start_usb;
     printf(" %lu %ld\n",start_usb, diff);
