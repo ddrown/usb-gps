@@ -46,6 +46,13 @@
 #define LCD_SEND_Rw 1 << 1  // Read/Write bit
 #define LCD_SEND_Rs 1  // Register select bit
 
+#define LCD_MAX_X 20
+#define LCD_MAX_Y 4
+static char current_lcd_state[LCD_MAX_X][LCD_MAX_Y];
+// printing = where we want to print
+// current = location of LCD's pointer
+static uint8_t printing_lcd_x, printing_lcd_y, current_lcd_x, current_lcd_y;
+
 // estimation: 168mhz and ~30 instructions per loop
 #define ONE_MS 5600
 static int8_t send_i2c_data(uint8_t data) {
@@ -211,22 +218,51 @@ void setup_LCD() {
 void LCD_home() {
   // top left corner
   send_byte(LCD_RETURNHOME, 0);
+  current_lcd_x = current_lcd_y = printing_lcd_x = printing_lcd_y = 0;
   DelayUS(500); // moving to home takes awhile
 }
 
 void LCD_clear() {
+  uint8_t x,y;
   // clear anything that might be on it
   send_byte(LCD_CLEARDISPLAY, 0);
+  current_lcd_x = current_lcd_y = printing_lcd_x = printing_lcd_y = 0;
+  for(x = 0; x < LCD_MAX_X; x++) {
+   for(y = 0; y < LCD_MAX_Y; y++) {
+     current_lcd_state[x][y] = ' ';
+   }
+  }
   DelayUS(1500); // clearing the display takes awhile
 }
 
 void LCD_moveTo(uint8_t col, uint8_t row) {
   int row_offsets[] = { 0x00, 0x40, 0x14, 0x54 };
   send_byte(LCD_SETDDRAMADDR | (col + row_offsets[row]), 0);
+  current_lcd_x = printing_lcd_x = col;
+  current_lcd_y = printing_lcd_y = row;
+}
+
+static void advance_cursor(uint8_t *x, uint8_t *y) {
+  (*x)++;
+  if(*x == LCD_MAX_X) {
+    (*y)++;
+    (*x) = 0;
+  }
+  if(*y == LCD_MAX_Y) {
+    (*y) = 0;
+  }
 }
 
 // around 700us - 800us per character
 uint8_t LCD_print_char(uint8_t value) {
-  send_byte(value, LCD_SEND_Rs);
+  if(current_lcd_state[printing_lcd_x][printing_lcd_y] != value) {
+    if(current_lcd_x != printing_lcd_x || current_lcd_y != printing_lcd_y) {
+      LCD_moveTo(printing_lcd_x, printing_lcd_y);
+    }
+    send_byte(value, LCD_SEND_Rs);
+    current_lcd_state[current_lcd_x][current_lcd_y] = value;
+    advance_cursor(&current_lcd_x, &current_lcd_y);
+  }
+  advance_cursor(&printing_lcd_x, &printing_lcd_y);
   return 1;
 }

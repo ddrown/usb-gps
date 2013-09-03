@@ -1,6 +1,9 @@
 #ifndef __LCD_H__
 #define __LCD_H__
 
+#define LCD_MAX_X 20
+#define LCD_MAX_Y 4
+
 void I2C_init();
 void setup_LCD();
 

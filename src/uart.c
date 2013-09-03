@@ -178,49 +178,50 @@ static void handle_gpgga(const char *line) {
 
 static uint8_t last_second;
 static uint8_t saw_repeat = 0;
-static uint8_t line_len[4] = {0,0,0,0};
-void gps_lcd_print() {
+static uint8_t line_len[LCD_MAX_Y] = {0,0,0,0};
+void gps_lcd_print() { // TODO: NMEA is a second behind
   uint8_t linepos;
+
   LCD_moveTo(0,0);
-  linepos = LCD_print_char('S'); // 0,0
-  linepos += LCD_print_uint(gps_state.fix_sat_count,0); // 1,0
-  linepos += LCD_print_char('/'); // 3,0
-  linepos += LCD_print_uint(gps_state.sat_count,0); // 4,0
-  linepos += LCD_print_char(' '); // 6,0
-  linepos += LCD_print_uint(gps_state.avg_snr,0); // 7,0
-  linepos += LCD_print_char(' '); // 9,0
-  if(gps_state.fix_type == 1) {
-    linepos += LCD_print_string("--"); // 10,0
-  } else if(gps_state.fix_type == 2) {
-    linepos += LCD_print_string("2D"); // 10,0
-  } else if(gps_state.fix_type == 3) {
-    linepos += LCD_print_string("3D"); // 10,0
-  }
-  linepos += LCD_print_string(gps_state.valid ? "VLD" : "INV"); // 12,0
-  if(saw_repeat) {
-    saw_repeat++; // loop out after 255
-    linepos += LCD_print_string(" RPT"); // 15,0
-  }
+  linepos = LCD_print_string("TIM "); // col0
+  linepos += LCD_print_uint(gps_state.hour,2); // col4
+  linepos += LCD_print_char(':'); // col6
+  linepos += LCD_print_uint(gps_state.minute,2); // col7
+  linepos += LCD_print_char(':'); // col9
+  linepos += LCD_print_uint(gps_state.second,2); // col10
+  linepos += LCD_print_char('.'); // col12
+  linepos += LCD_print_uint(ms_since_last_pps(),3); // col13
   line_len[0] = LCD_spacepad(linepos, line_len[0]);
-  
+
   LCD_moveTo(0,1);
-  linepos = LCD_print_char('D'); // 0,1
-  linepos += LCD_print_uint(gps_state.year,2); // 1,1
-  linepos += LCD_print_char('/'); // 3,1
-  linepos += LCD_print_uint(gps_state.month,2); // 4,1
-  linepos += LCD_print_char('/'); // 6,1
-  linepos += LCD_print_uint(gps_state.day,2); // 7,1
+  linepos = LCD_print_string("DAT "); // col0
+  linepos += LCD_print_uint(gps_state.year,2); // col4
+  linepos += LCD_print_char('/'); // col6
+  linepos += LCD_print_uint(gps_state.month,2); // col7
+  linepos += LCD_print_char('/'); // col9
+  linepos += LCD_print_uint(gps_state.day,2); // col10
   line_len[1] = LCD_spacepad(linepos, line_len[1]);
 
   LCD_moveTo(0,2);
-  linepos = LCD_print_string("T"); // 0,2
-  linepos += LCD_print_uint(gps_state.hour,2); // 1,2
-  linepos += LCD_print_char(':'); // 3,2
-  linepos += LCD_print_uint(gps_state.minute,2); // 4,2
-  linepos += LCD_print_char(':'); // 6,2
-  linepos += LCD_print_uint(gps_state.second,2); // 7,2
-  linepos += LCD_print_char('.'); // 9,2
-  linepos += LCD_print_uint(ms_since_last_pps(),3); // 10,2
+  linepos = LCD_print_string("SAT "); // col0
+  linepos += LCD_print_uint(gps_state.fix_sat_count,0); // col4
+  linepos += LCD_print_char('/'); // col6
+  linepos += LCD_print_uint(gps_state.sat_count,0); // col7
+  linepos += LCD_print_char(' '); // col9
+  linepos += LCD_print_uint(gps_state.avg_snr,0); // col10
+  linepos += LCD_print_char(' '); // col12
+  if(gps_state.fix_type == 1) {
+    linepos += LCD_print_string("--"); // col13
+  } else if(gps_state.fix_type == 2) {
+    linepos += LCD_print_string("2D"); // col13
+  } else if(gps_state.fix_type == 3) {
+    linepos += LCD_print_string("3D"); // col13
+  }
+  linepos += LCD_print_string(gps_state.valid ? "VLD" : "INV"); // col15
+  if(saw_repeat) {
+    saw_repeat++; // loop out after 255
+    linepos += LCD_print_string(" !"); // col18
+  }
   line_len[2] = LCD_spacepad(linepos, line_len[2]);
 }
 
