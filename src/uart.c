@@ -179,7 +179,7 @@ static void handle_gpgga(const char *line) {
 static uint8_t last_second;
 static uint8_t saw_repeat = 0;
 static uint8_t line_len[4] = {0,0,0,0};
-static void gps_lcd_print() {
+void gps_lcd_print() {
   uint8_t linepos;
   LCD_moveTo(0,0);
   linepos = LCD_print_char('S'); // 0,0
@@ -262,7 +262,6 @@ void mainloop_uart() {
     if(last_second == gps_state.second) {
       saw_repeat = 1;
     }
-    gps_lcd_print(); // TODO: ~33ms and might conflict with P message
     printf("G %u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%lu\n", gps_state.fix_type, gps_state.fix_sat_count, gps_state.sat_count, gps_state.avg_snr,
         gps_state.hour, gps_state.minute, gps_state.second, 
         gps_state.day, gps_state.month, gps_state.year, 

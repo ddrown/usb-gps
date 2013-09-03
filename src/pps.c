@@ -45,9 +45,12 @@ void after_usb_poll() {
     hz = LastPPSTime-pps_before_that;
     printf(" %lu %lu %ld %ld %u\n", LastPPSTime, start_usb, hz, diff, last_usb_time);
     pps_before_that = LastPPSTime;
+
+    gps_lcd_print();
   } else if(pending_usb_time == 251) {
     int32_t diff = TIM_GetCounter(TIM2) - start_usb;
     printf(" %lu %ld\n",start_usb, diff);
+    GPIO_ResetBits(GPIOD, GPIO_Pin_12);
   }
 }
 
@@ -65,7 +68,7 @@ void TIM2_CC2_IRQ() {
   LastPPSTime = TIM_GetCapture2(TIM2);
   PendingPPSTime = 1;
   // flash LED
-  GPIO_ToggleBits(GPIOD, GPIO_Pin_12);
+  GPIO_SetBits(GPIOD, GPIO_Pin_12);
 }
 
 void PPS_init() {
