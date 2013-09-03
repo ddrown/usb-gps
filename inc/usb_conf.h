@@ -54,11 +54,11 @@
 #endif /* USE_USB_OTG_HS */
 
 #ifndef USE_ULPI_PHY
-#define USE_ULPI_PHY
+ //#define USE_ULPI_PHY
 #endif /* USE_ULPI_PHY */
 
 #ifndef USE_EMBEDDED_PHY
- //#define USE_EMBEDDED_PHY
+#define USE_EMBEDDED_PHY
 #endif /* USE_EMBEDDED_PHY */
 
 #ifndef USE_I2C_PHY
